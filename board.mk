@@ -15,3 +15,6 @@ include $(PROJECT_DIR)/hw_layer/ports/stm32/2mb_flash.mk
 
 # Niente SD card sulla proto.
 DDEFS += -DEFI_FILE_LOGGING=FALSE
+
+# SD storage off (va spento insieme a FatFS)
+DDEFS += -DEFI_STORAGE_SD=FALSE
