@@ -1,21 +1,17 @@
 include $(BOARD_DIR)/firmware/firmware.mk
 
-
 BOARDINC += $(BOARD_DIR)/generated/controllers/generated
 
 # defines SHORT_BOARD_NAME
 include $(BOARD_DIR)/meta-info.env
 
-# this would save some flash while being unable to update WBO controller firmware
 DDEFS += -DEFI_WIDEBAND_FIRMWARE_UPDATE=FALSE
 
-# assign critical LED to a non-existent pin if you do not have it on your board
-# good old PD14 is still the default value
-# DDEFS += -DLED_CRITICAL_ERROR_BRAIN_PIN=Gpio::I15
+# STM32F767ZIT6: 2048 KB di flash [ST STM32F767ZITx.xml]
+include $(PROJECT_DIR)/hw_layer/ports/stm32/2mb_flash.mk
 
-# EGT chip
-#un-comment to enable
-#DDEFS += -DEFI_MAX_31855=TRUE
+# Quarzo X1 = 8 MHz [netlist; BOM provaecu]. Nessun override di STM32_HSECLK:
+# RusEFI F7 parte su HSI e rileva da solo la frequenza dell' HSE [osc_detector.cpp].
 
-#see main repo for details on this any many other optional subsystems. We have too many, one has to choose what fits into his choice of stm32
-#DDEFS += -DEFI_ONBOARD_MEMS=TRUE
+# Niente SD card sulla proto.
+DDEFS += -DEFI_FILE_LOGGING=FALSE
