@@ -1,81 +1,146 @@
+#
+# ECUstm32 proto 1 canale — CN1 (TE 1-776087-1, 23 vie)
+# Fonte: netlist Sheet_1_2026-08-05.net (net -> CN1-n -> pin MCU)
+#
+
 pins:
-  - id: B14
+  - pin: 1
+    function: 12V_MAIN (da main relay)
+    type: 12V
+
+  - pin: 2
+    function: 12V_MAIN (da main relay)
+    type: 12V
+
+  - pin: 3
+    function: 12V_KEY (sotto chiave)
+    type: 12V
+
+  - pin: 4
+    function: GND potenza
+    type: gnd
+
+  - pin: 5
+    function: AGND massa sensori
+    type: sgnd
+
+  - pin: 6
+    function: VREF_5V alimentazione sensori
+    type: 5V
+
+  - pin: 7
+    id: C6
     class: outputs
-    ts_name: B14 Output
+    function: Contagiri (open collector)
+    ts_name: 7 - Tach out
+    type: ls
 
-  - id: EFI_ADC_0
+  - pin: 8
+    id: EFI_ADC_3
     class: analog_inputs
-# getAdcChannelBrainPin in 'stm32_adc.cpp' says EFI_ADC_0 is PA0
-    ts_name: On-board Battery Sense (A0)
+    function: CLT (NTC, pull-up 2.49k)
+    ts_name: 8 - CLT
+    type: at
 
-  - id: EFI_ADC_1
+  - pin: 9
+    id: EFI_ADC_2
     class: analog_inputs
-    ts_name: Analog Inputs 1 (A1)
+    function: IAT (NTC, pull-up 2.49k)
+    ts_name: 9 - IAT
+    type: at
 
-  - id: EFI_ADC_2
+  - pin: 10
+    id: EFI_ADC_5
     class: analog_inputs
-    ts_name: Analog Inputs 2 (A2)
+    function: MAP 0-5V
+    ts_name: 10 - MAP
+    type: av
 
-  - id: EFI_ADC_3
+  - pin: 11
+    id: EFI_ADC_6
     class: analog_inputs
-    ts_name: Analog Inputs 3 (A3)
+    function: TPS 0-5V
+    ts_name: 11 - TPS
+    type: av
 
-  - id: EFI_ADC_4
+  - pin: 12
+    id: EFI_ADC_13
     class: analog_inputs
-    ts_name: Analog Inputs 4 (A4)
+    function: Wideband 0-5V
+    ts_name: 12 - WBO2
+    type: av
 
-  - id: EFI_ADC_5
-    class: analog_inputs
-    ts_name: On-board MAP (A5)
+  - pin: 13
+    id: E9
+    class: event_inputs
+    function: VR1+ albero motore (MAX9926 IN1+)
+    ts_name: 13/14 - VR1 Crank
+    type: vr
 
-  - id: EFI_ADC_6
-    class: analog_inputs
-    ts_name: Analog Inputs 6 (A6)
+  - pin: 14
+    function: VR1- albero motore (MAX9926 IN1-)
+    type: vr
 
-  - id: EFI_ADC_7
-    class: analog_inputs
-    ts_name: Analog Inputs 7 (A7)
+  - pin: 15
+    id: D3
+    class: outputs
+    function: Iniettore 1
+    ts_name: 15 - Injector 1
+    type: inj
 
-  - id: EFI_ADC_8
-    class: analog_inputs
-    ts_name: On-board BARO (B0)
+  - pin: 16
+    id: G0
+    class: outputs
+    function: Bobina 1 (smart o IGBT, jumper SJ2/SJ3)
+    ts_name: 16 - Ignition 1
+    type: ign
 
-  - id: EFI_ADC_9
-    class: analog_inputs
-    ts_name: Analog Inputs 9 (B1)
+  - pin: 17
+    id: D0
+    class: outputs
+    function: Rele' pompa benzina
+    ts_name: 17 - Fuel pump relay
+    type: ls
 
-  - id: EFI_ADC_10
-    class: analog_inputs
-    ts_name: Analog Inputs 10 (C0)
+  - pin: 18
+    id: G14
+    class: outputs
+    function: Main relay
+    ts_name: 18 - Main relay
+    type: mr
 
-  - id: EFI_ADC_11
-    class: analog_inputs
-    ts_name: Primary On-board O2 (C1)
+  - pin: 19
+    id: B11
+    class: outputs
+    function: Idle PWM
+    ts_name: 19 - Idle
+    type: ls
 
-  - id: EFI_ADC_12
-    class: analog_inputs
-    ts_name: Secondary On-board O2 (C2)
+  - pin: 20
+    function: CAN1 H
+    type: can
 
-  - id: EFI_ADC_13
-    class: analog_inputs
-    ts_name: Analog Inputs 13 (C3)
+  - pin: 21
+    function: CAN1 L
+    type: can
 
-  - id: EFI_ADC_14
-    class: analog_inputs
-    ts_name: Analog Inputs 14 (C4)
+  - pin: 22
+    id: E7
+    class: switch_inputs
+    function: Interruttore frizione (pull-up 2.2k)
+    ts_name: 22 - Clutch
+    type: din
 
-  - id: EFI_ADC_15
-    class: analog_inputs
-    ts_name: Analog Inputs 15 (C5)
+  - pin: 23
+    id: B7
+    class: outputs
+    function: WP1_PWM (open drain, pull-up 4.7k a 5V)
+    ts_name: 23 - WP1 PWM
+    type: ls
 
-  - id: [E2, E2]
-    class: [switch_inputs, event_inputs]
-    ts_name: VR/Hall 1 (E2)
-
-  - id: [E3, E3]
-    class: [switch_inputs, event_inputs]
-    ts_name: VR/Hall 2 (E3)
-
-  - id: [E4, E4]
-    class: [switch_inputs, event_inputs]
-    ts_name: VR/Hall 3 (E4)
+  - pin: IGN
+    id: G15
+    class: switch_inputs
+    function: Sense chiave interno (da 12V_KEY, partitore 47k/10k)
+    ts_name: Ignition key sense
+    type: din
