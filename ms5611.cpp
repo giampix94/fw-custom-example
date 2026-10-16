@@ -9,20 +9,21 @@
  *     void initMs5611Baro();                       // forward declaration
  *     custom_board_InitHardware = initMs5611Baro;  // in setup_custom_board_overrides()
  *
- * Tutte le formule/comandi dal datasheet MS5611-01BA03 (DA5611-01BA03_011, 26.10.2012).
- * I riferimenti [DS pag.N] indicano la pagina. Schema modellato su
- * ext/rusefi/firmware/hw_layer/sensors/lps25.cpp e init/sensor/init_baro.cpp.
+ * Bus: istanzia direttamente un BitbangI2c (solo GPIO/PAL), NON usa
+ * getI2cBus(scl,sda) che e' solo una ricerca di bus gia' creati da
+ * initI2cModules() - che gira dopo questo hook.
  *
- * HW ECUstm32 proto:
- *   - bus bit-bang su SCL=PF0, SDA=PF1 (la netlist ha SCL/SDA invertiti rispetto
- *     all'I2C HW; il bit-bang pilota GPIO qualsiasi, quindi lo scambio e' neutro)
- *   - CSB->VCC => indirizzo 0x76
- *   - PS->VCC per modalita' I2C  (DA CONFERMARE dalla netlist)
+ * Formule/comandi dal datasheet MS5611-01BA03 (DA5611-01BA03_011, 26.10.2012).
+ * [DS pag.N] = pagina. Schema sensore modellato su hw_layer/sensors/lps25.cpp.
+ *
+ * HW ECUstm32 proto: SCL=PF0, SDA=PF1 (netlist invertita vs I2C HW -> forza il
+ * bit-bang). Indirizzo provato automaticamente 0x76 (CSB->VCC) e 0x77 (CSB->GND).
  */
 
 #include "pch.h"
 #include "board_overrides.h"
 #include "i2c.h"
+#include "i2c_bb.h"
 
 #if EFI_PROD_CODE
 #include "periodic_thread_controller.h"
@@ -38,39 +39,59 @@ static constexpr uint8_t CMD_PROM_READ  = 0xA0; // base; |(addr<<1) per la word 
 // OSR=4096: conversione max 9.04 ms [DS pag.3] -> attesa 10 ms
 static constexpr int CONVERSION_WAIT_MS = 10;
 
+// Bus bit-bang dedicato al baro (self-contained, solo GPIO).
+static BitbangI2c ms5611bus;
+
 class Ms5611 : public StoredValueSensor {
 public:
 	Ms5611() : StoredValueSensor(SensorType::BarometricPressure, MS2NT(1000)) { }
 
-	bool init(brain_pin_e scl, brain_pin_e sda, uint8_t i2cAddr) {
-		m_addr = i2cAddr;
-
-		m_i2c = getI2cBus(scl, sda);
-		if (m_i2c == nullptr) {
+	bool init(brain_pin_e scl, brain_pin_e sda) {
+		// crea il bus bit-bang su quei pin
+		if (!ms5611bus.init(scl, sda, I2C_SPEED_400K)) {
+			efiPrintf("MS5611: init bus bit-bang fallita");
 			return false;
 		}
+		m_i2c = &ms5611bus;
 
-		if (!reset()) {
+		// prova indirizzo 0x76 (CSB->VCC) poi 0x77 (CSB->GND): chi fa ACK sul reset vince
+		const uint8_t addrs[2] = {0x76, 0x77};
+		bool acked = false;
+		for (int i = 0; i < 2 && !acked; i++) {
+			m_addr = addrs[i];
+			if (m_i2c->write(m_addr, &CMD_RESET, 1) == MSG_OK) {
+				acked = true;
+			}
+		}
+		if (!acked) {
+			efiPrintf("MS5611: nessun ACK su 0x76/0x77 - PS a VCC? clock? cablaggio PF0/PF1?");
 			return false;
 		}
+		efiPrintf("MS5611: ACK su 0x%02x", (unsigned)m_addr);
+
 		// dopo il reset ~2.8 ms per il reload della PROM [DS pag.9]
 		chThdSleepMilliseconds(5);
 
 		if (!readProm()) {
+			efiPrintf("MS5611: lettura PROM fallita");
 			return false;
 		}
-		// PROM tutta 0x0000/0xFFFF = nessun chip / bus guasto
+		efiPrintf("MS5611: PROM C1..C6 = %u %u %u %u %u %u",
+			(unsigned)m_prom[1], (unsigned)m_prom[2], (unsigned)m_prom[3],
+			(unsigned)m_prom[4], (unsigned)m_prom[5], (unsigned)m_prom[6]);
+
 		if (m_prom[1] == 0x0000 || m_prom[1] == 0xFFFF) {
+			efiPrintf("MS5611: PROM vuota/0xFFFF - bus o chip KO");
 			return false;
 		}
-		// CRC4: se non torna, coefficienti non affidabili -> non registrare
 		if (!checkCrc()) {
-			efiPrintf("MS5611: PROM CRC4 mismatch, sensore non attivato");
+			efiPrintf("MS5611: PROM CRC4 mismatch - clock troppo alto o rumore?");
 			return false;
 		}
 
 		m_hasInit = true;
 		Register();
+		efiPrintf("MS5611: OK, sensore baro registrato su 0x%02x", (unsigned)m_addr);
 		return true;
 	}
 
@@ -142,10 +163,6 @@ private:
 	bool m_hasInit = false;
 	uint16_t m_prom[8] = {0};  // 0=factory, 1..6=C1..C6, 7=serial+CRC
 
-	bool reset() {
-		return m_i2c->write(m_addr, &CMD_RESET, 1) == MSG_OK;
-	}
-
 	bool readProm() {
 		for (uint8_t i = 0; i < 8; i++) {
 			uint8_t cmd = CMD_PROM_READ | (i << 1);
@@ -214,15 +231,14 @@ static Ms5611Thread ms5611driver;
 #endif
 
 // Agganciato a custom_board_InitHardware da board_configuration.cpp.
-// Gira da initHardware() (HAL/pad pronti).
 void initMs5611Baro() {
 	// Se c'e' gia' un baro (es. analogico) configurato, non sovrascrivere.
 	if (Sensor::hasSensor(SensorType::BarometricPressure)) {
 		return;
 	}
 
-	// SCL=PF0, SDA=PF1, indirizzo 0x76 (CSB->VCC)
-	if (ms5611device.init(Gpio::F0, Gpio::F1, 0x76)) {
+	// SCL=PF0, SDA=PF1 (netlist invertita vs I2C HW)
+	if (ms5611device.init(Gpio::F0, Gpio::F1)) {
 #if EFI_PROD_CODE
 		ms5611driver.setPeriod(1000 /*ms*/);  // baro ~1 Hz
 		ms5611driver.start();
