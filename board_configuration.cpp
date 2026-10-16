@@ -18,6 +18,7 @@
 #include "board_overrides.h"
 
 void setupBoardHardwareTestOverrides();
+void initMs5611Baro();  // definita in ms5611.cpp
 
 // Nessun LED collegato all'MCU sulla proto [NET: U2/U3 sono LED su 12V_MAIN/12V_KEY]
 Gpio getCommsLedPin() {
@@ -136,4 +137,5 @@ void setup_custom_board_overrides() {
   custom_board_DefaultConfiguration = customBoardDefaultConfiguration;
   custom_board_getAnalogInputDividerCoefficient = protoGetAnalogInputDividerCoefficient;
   custom_board_getThermistorSupplyVoltage = protoGetThermistorSupplyVoltage;
+  custom_board_InitHardware = initMs5611Baro;  // baro MS5611 su I2C bit-bang PF0/PF1
 }
