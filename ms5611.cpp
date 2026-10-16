@@ -18,6 +18,21 @@
  *
  * HW ECUstm32 proto: SCL=PF0, SDA=PF1 (netlist invertita vs I2C HW -> forza il
  * bit-bang). Indirizzo provato automaticamente 0x76 (CSB->VCC) e 0x77 (CSB->GND).
+ *
+ * Filtro anti-glitch bit-bang (2026-10-17):
+ * il bus bit-bang usa un loop di nop tarato per ~320kHz su un F4 @ 168MHz
+ * [ext/rusefi/firmware/hw_layer/drivers/i2c/i2c_bb.cpp, waitQuarterBit()]; sulla
+ * nostra F767 @ 216MHz lo stesso loop gira piu' veloce (~411kHz stimato), sopra
+ * il limite 400kHz del datasheet MS5611, e in piu' il bit-bang non ha nessuna
+ * protezione da interruzioni (nessuna sezione critica in i2c_bb.cpp). Le letture
+ * D1/D2 non hanno un CRC per-campione (solo la PROM ce l'ha), quindi un singolo
+ * bit corrotto puo' produrre un valore sbagliato ma comunque dentro la finestra
+ * di plausibilita' 50-120 kPa, e passare come valido per un ciclo.
+ * MAX_STEP_KPA/CONFIRM_SAMPLES sono una soglia di progetto (NON da datasheet):
+ * un singolo campione che si scosta troppo dall'ultimo buono viene scartato (si
+ * ripubblica l'ultimo valore buono), a meno che lo scostamento non si confermi
+ * su CONFIRM_SAMPLES campioni consecutivi concordi (allora e' un cambio vero,
+ * es. variazione di quota, non un glitch del bus).
  */
 
 #include "pch.h"
@@ -38,6 +53,10 @@ static constexpr uint8_t CMD_PROM_READ  = 0xA0; // base; |(addr<<1) per la word 
 
 // OSR=4096: conversione max 9.04 ms [DS pag.3] -> attesa 10 ms
 static constexpr int CONVERSION_WAIT_MS = 10;
+
+// Filtro anti-glitch bit-bang: soglia di progetto, vedi nota in testa al file.
+static constexpr float MAX_STEP_KPA = 3.0f;
+static constexpr int CONFIRM_SAMPLES = 3;
 
 // Bus bit-bang dedicato al baro (self-contained, solo GPIO).
 static BitbangI2c ms5611bus;
@@ -151,8 +170,40 @@ public:
 			return unexpected;
 		}
 
-		setValidValue(kilopascal, getTimeNowNt());
-		return kilopascal;
+		// --- Filtro anti-glitch bit-bang (vedi nota in testa al file) -----
+		if (!m_hasLastValid) {
+			m_hasLastValid = true;
+			m_lastValidKpa = kilopascal;
+			m_pendingCount = 0;
+		} else if (fabsf(kilopascal - m_lastValidKpa) > MAX_STEP_KPA) {
+			// scostamento sospetto rispetto all'ultimo valore buono
+			if (m_pendingCount > 0 && fabsf(kilopascal - m_pendingKpa) <= MAX_STEP_KPA) {
+				m_pendingCount++;
+			} else {
+				m_pendingKpa = kilopascal;
+				m_pendingCount = 1;
+			}
+
+			if (m_pendingCount >= CONFIRM_SAMPLES) {
+				// confermato su piu' campioni consecutivi concordi: e' un cambio vero,
+				// non un glitch del bus (es. variazione di quota)
+				m_lastValidKpa = kilopascal;
+				m_pendingCount = 0;
+			} else {
+				// scarta il campione: ripubblica l'ultimo valore buono (timestamp
+				// aggiornato cosi' il sensore non va mai "stale")
+				efiPrintf("MS5611: campione scartato %.2f kPa (ultimo buono %.2f kPa, conferma %d/%d)",
+					kilopascal, m_lastValidKpa, m_pendingCount, CONFIRM_SAMPLES);
+				setValidValue(m_lastValidKpa, getTimeNowNt());
+				return m_lastValidKpa;
+			}
+		} else {
+			m_lastValidKpa = kilopascal;
+			m_pendingCount = 0;
+		}
+
+		setValidValue(m_lastValidKpa, getTimeNowNt());
+		return m_lastValidKpa;
 	}
 
 	bool hasInit() const { return m_hasInit; }
@@ -162,6 +213,12 @@ private:
 	uint8_t m_addr = 0x76;
 	bool m_hasInit = false;
 	uint16_t m_prom[8] = {0};  // 0=factory, 1..6=C1..C6, 7=serial+CRC
+
+	// Stato del filtro anti-glitch (vedi nota in testa al file).
+	bool m_hasLastValid = false;
+	float m_lastValidKpa = 0.0f;
+	float m_pendingKpa = 0.0f;
+	int m_pendingCount = 0;
 
 	bool readProm() {
 		for (uint8_t i = 0; i < 8; i++) {
