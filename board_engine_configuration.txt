@@ -4,6 +4,11 @@
 ! board_configuration.cpp (custom_board_periodicSlowCallback). Each criterion
 ! is evaluated on a decaying peak reached while driving, not a flat maximum
 ! over the whole session: every criterion has its own half-life window.
+!
+! NOTE: this file is registered before the shared @@...@@ constants prepend
+! (gen_config_common.sh: BOARD_ENGINE_CONFIGURATION_FROM_FILE at line 60,
+! rusefi_config_shared.txt prepend at line 93), so UNITS_KPA_TO_PSI (0.145038)
+! and MAP_UPPER_LIMIT (650) below are written as literals, not @@macros@@.
 bit turboTimerEnabled,"Enabled","Disabled"
 bit turboTimerUseEgt,"Yes","No"
 bit turboTimerUseOilTemp,"Yes","No"
@@ -15,7 +20,7 @@ uint16_t turboTimerIdleRpm;Idle speed target held during the countdown. 0 disabl
 uint16_t turboTimerEgtThreshold;Activates if the decayed EGT peak exceeded this value.;"C", 1, 0, 0, 1200, 0
 int16_t turboTimerOilTempThreshold;Activates if the decayed oil temperature peak exceeded this value.;"C", 1, 0, 0, 200, 0
 int16_t turboTimerCltThreshold;Activates if the decayed coolant temperature peak exceeded this value.;"C", 1, 0, 0, 150, 0
-uint16_t turboTimerBoostThreshold;Activates if the decayed boost peak exceeded this value.;{bitStringValue(pressureUnitsLabels, useMetricOnInterface)}, {useMetricOnInterface ? 1 : @@UNITS_KPA_TO_PSI@@}, 0, {useMetricOnInterface ? 0 : 0}, {useMetricOnInterface ? @@MAP_UPPER_LIMIT@@ : @@MAP_UPPER_LIMIT@@ * @@UNITS_KPA_TO_PSI@@}, 0
+uint16_t turboTimerBoostThreshold;Activates if the decayed boost peak exceeded this value.;{bitStringValue(pressureUnitsLabels, useMetricOnInterface)}, {useMetricOnInterface ? 1 : 0.145038}, 0, {useMetricOnInterface ? 0 : 0}, {useMetricOnInterface ? 650 : 650 * 0.145038}, 0
 uint16_t turboTimerEgtPeakWindowMin;Half-life of the EGT peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 uint16_t turboTimerOilPeakWindowMin;Half-life of the oil temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 uint16_t turboTimerCltPeakWindowMin;Half-life of the coolant temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
