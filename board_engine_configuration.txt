@@ -3,15 +3,15 @@
 ! per far raffreddare il turbo. Il bypass del main relay e la logica stanno in
 ! board_configuration.cpp (custom_board_periodicSlowCallback). I criteri sono
 ! valutati sul PICCO raggiunto durante la guida, non sul valore istantaneo.
-	bit turboTimerEnabled,"abilitato","disabilitato"
-	bit turboTimerUseEgt,"si","no"
-	bit turboTimerUseOilTemp,"si","no"
-	bit turboTimerUseClt,"si","no"
-	bit turboTimerUseBoost,"si","no"
-	bit turboTimerRaiseIdle,"si","no"
-	uint16_t turboTimerDurationSec;Durata del countdown dopo key-off;"s", 1, 0, 10, 180, 0
-	uint16_t turboTimerIdleRpm;Regime minimo tenuto durante il countdown (0 = non alza il minimo). Si sblocca solo se un'uscita minimo e' assegnata.;"RPM", 1, 0, 0, 3000, 0
-	uint16_t turboTimerEgtThreshold;Si attiva se il picco EGT in guida ha superato questa soglia;"C", 1, 0, 0, 1200, 0
-	int16_t turboTimerOilTempThreshold;Si attiva se il picco temp olio in guida ha superato questa soglia;"C", 1, 0, 0, 200, 0
-	int16_t turboTimerCltThreshold;Si attiva se il picco CLT in guida ha superato questa soglia;"C", 1, 0, 0, 150, 0
-	uint16_t turboTimerBoostThreshold;Si attiva se il picco MAP (boost) in guida ha superato questa soglia;"kPa", 1, 0, 0, 400, 0
+bit turboTimerEnabled,"abilitato","disabilitato"
+bit turboTimerUseEgt,"si","no"
+bit turboTimerUseOilTemp,"si","no"
+bit turboTimerUseClt,"si","no"
+bit turboTimerUseBoost,"si","no"
+bit turboTimerRaiseIdle,"si","no"
+uint16_t turboTimerDurationSec;Durata del countdown dopo key-off;"s", 1, 0, 10, 180, 0
+uint16_t turboTimerIdleRpm;Regime minimo tenuto durante il countdown (0 = non alza il minimo). Si sblocca solo se un'uscita minimo e' assegnata.;"RPM", 1, 0, 0, 3000, 0
+uint16_t turboTimerEgtThreshold;Si attiva se il picco EGT in guida ha superato questa soglia;"C", 1, 0, 0, 1200, 0
+int16_t turboTimerOilTempThreshold;Si attiva se il picco temp olio in guida ha superato questa soglia;"C", 1, 0, 0, 200, 0
+int16_t turboTimerCltThreshold;Si attiva se il picco CLT in guida ha superato questa soglia;"C", 1, 0, 0, 150, 0
+uint16_t turboTimerBoostThreshold;Si attiva se il picco MAP (boost) in guida ha superato questa soglia;"kPa", 1, 0, 0, 400, 0
