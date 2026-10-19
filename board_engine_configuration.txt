@@ -1,17 +1,22 @@
-! === Turbo Timer (raffreddamento turbo dopo key-off) ===
-! Tiene il motore acceso per un tempo configurabile dopo che la chiave va a OFF,
-! per far raffreddare il turbo. Il bypass del main relay e la logica stanno in
-! board_configuration.cpp (custom_board_periodicSlowCallback). I criteri sono
-! valutati sul PICCO raggiunto durante la guida, non sul valore istantaneo.
-bit turboTimerEnabled,"abilitato","disabilitato"
-bit turboTimerUseEgt,"si","no"
-bit turboTimerUseOilTemp,"si","no"
-bit turboTimerUseClt,"si","no"
-bit turboTimerUseBoost,"si","no"
-bit turboTimerRaiseIdle,"si","no"
-uint16_t turboTimerDurationSec;Durata del countdown dopo key-off;"s", 1, 0, 10, 180, 0
-uint16_t turboTimerIdleRpm;Regime minimo tenuto durante il countdown (0 = non alza il minimo). Si sblocca solo se un'uscita minimo e' assegnata.;"RPM", 1, 0, 0, 3000, 0
-uint16_t turboTimerEgtThreshold;Si attiva se il picco EGT in guida ha superato questa soglia;"C", 1, 0, 0, 1200, 0
-int16_t turboTimerOilTempThreshold;Si attiva se il picco temp olio in guida ha superato questa soglia;"C", 1, 0, 0, 200, 0
-int16_t turboTimerCltThreshold;Si attiva se il picco CLT in guida ha superato questa soglia;"C", 1, 0, 0, 150, 0
-uint16_t turboTimerBoostThreshold;Si attiva se il picco MAP (boost) in guida ha superato questa soglia;"kPa", 1, 0, 0, 400, 0
+! === Turbo Timer ===
+! Keeps the engine running for a configurable time after the key goes to OFF,
+! to let the turbo cool down. The main relay bypass and the logic live in
+! board_configuration.cpp (custom_board_periodicSlowCallback). Each criterion
+! is evaluated on a decaying peak reached while driving, not a flat maximum
+! over the whole session: every criterion has its own half-life window.
+bit turboTimerEnabled,"Enabled","Disabled"
+bit turboTimerUseEgt,"Yes","No"
+bit turboTimerUseOilTemp,"Yes","No"
+bit turboTimerUseClt,"Yes","No"
+bit turboTimerUseBoost,"Yes","No"
+bit turboTimerRaiseIdle,"Yes","No"
+uint16_t turboTimerDurationSec;Countdown duration after key-off.;"s", 1, 0, 10, 180, 0
+uint16_t turboTimerIdleRpm;Idle speed target held during the countdown. 0 disables the idle raise. Unlocks only when an idle output is assigned.;"RPM", 1, 0, 0, 3000, 0
+uint16_t turboTimerEgtThreshold;Activates if the decayed EGT peak exceeded this value.;"C", 1, 0, 0, 1200, 0
+int16_t turboTimerOilTempThreshold;Activates if the decayed oil temperature peak exceeded this value.;"C", 1, 0, 0, 200, 0
+int16_t turboTimerCltThreshold;Activates if the decayed coolant temperature peak exceeded this value.;"C", 1, 0, 0, 150, 0
+uint16_t turboTimerBoostThreshold;Activates if the decayed boost peak exceeded this value.;{bitStringValue(pressureUnitsLabels, useMetricOnInterface)}, {useMetricOnInterface ? 1 : @@UNITS_KPA_TO_PSI@@}, 0, {useMetricOnInterface ? 0 : 0}, {useMetricOnInterface ? @@MAP_UPPER_LIMIT@@ : @@MAP_UPPER_LIMIT@@ * @@UNITS_KPA_TO_PSI@@}, 0
+uint16_t turboTimerEgtPeakWindowMin;Half-life of the EGT peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
+uint16_t turboTimerOilPeakWindowMin;Half-life of the oil temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
+uint16_t turboTimerCltPeakWindowMin;Half-life of the coolant temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
+uint16_t turboTimerBoostPeakWindowMin;Half-life of the boost peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
