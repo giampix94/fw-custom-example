@@ -19,6 +19,7 @@
 #include "ignition_controller.h"
 #include "idle_thread.h"
 #include <rusefi/timer.h>
+#include <cmath>
 
 void setupBoardHardwareTestOverrides();
 void initMs5611Baro();  // definita in ms5611.cpp
@@ -136,39 +137,43 @@ static void customBoardDefaultConfiguration() {
 }
 
 // ======================= TURBO TIMER =======================
-// Tiene il motore acceso per turboTimerDurationSec dopo il key-off, per far
-// raffreddare il turbo. Campi in board_engine_configuration.txt, UI in
+// Keeps the engine running for turboTimerDurationSec after key-off, to let the
+// turbo cool down. Config fields in board_engine_configuration.txt, UI in
 // board_panels.ini / board_menu.ini.
 //
-// Gira in coda a doPeriodicSlowCallback (dopo MainRelayController), quindi:
-//  - il BYPASS del main relay e' deterministico: riscriviamo il pin dopo che
-//    il controller del relay lo ha gia' aggiornato [engine.cpp, commento
+// Runs at the tail of doPeriodicSlowCallback (after MainRelayController), so:
+//  - the main relay BYPASS is deterministic: we rewrite the pin after the
+//    relay controller has already updated it [engine.cpp, comment
 //    "after modules and board code"];
-//  - rusEFI NON taglia iniezione/accensione al key-off (checkShutdown() e'
-//    codice morto [engine.cpp]), quindi il motore resta vivo finche' gira.
+//  - rusEFI does NOT cut injection/ignition at key-off (checkShutdown() is
+//    dead code [engine.cpp]), so the engine keeps running as long as it spins.
 //
-// Criteri di attivazione: valutati sul PICCO raggiunto durante la guida.
-// Nessun criterio selezionato -> timer classico (sempre attivo al key-off).
+// Activation criteria: evaluated on a DECAYING peak reached while driving, not
+// a flat session-lifetime maximum. Each criterion has its own half-life: a
+// peak loses half its weight after that many minutes without a new high
+// reading, so a spike from well before key-off no longer counts once the
+// engine has run cool for a while. If no criterion is selected, the timer
+// always runs at key-off (classic behavior).
 //
-// Minimo alzato: loop proporzionale CLAMPATO su luaAdd (l'ingresso che rusEFI
-// espone a Lua per aggiungere aria al minimo [idle_thread.cpp]). Il clamp duro
-// su luaAdd (max 40%) e' la sicurezza: neanche una lettura RPM errata puo'
-// spalancare la valvola. La casella giri in TS si sblocca solo se un'uscita
-// minimo e' assegnata.
+// Raised idle: proportional loop CLAMPED on luaAdd (the input rusEFI exposes
+// to Lua for adding idle air [idle_thread.cpp]). The hard clamp on luaAdd
+// (max 40%) is the safety net: even a wrong RPM reading cannot open the valve
+// all the way. The RPM box in TS unlocks only if an idle output is assigned.
 
 static bool  ttCountingDown = false;
 static bool  ttPrevIgn      = false;
 static bool  ttFirst        = true;
 static bool  ttWeRaisedIdle = false;
 static Timer ttTimer;
+static Timer ttDecayTimer;
 static float ttPeakEgt = 0, ttPeakOil = 0, ttPeakClt = 0, ttPeakMap = 0;
 
 static void ttResetPeaks() {
   ttPeakEgt = ttPeakOil = ttPeakClt = ttPeakMap = 0;
 }
 
-// Azzera il bump di minimo SOLO se siamo stati noi ad applicarlo, per non
-// calpestare un eventuale setIdleAdd fatto da Lua durante il normale uso.
+// Clears the idle bump only if we were the ones who applied it, so we never
+// stomp on a setIdleAdd done by Lua during normal use.
 static void ttClearIdle() {
   if (ttWeRaisedIdle) {
     engine->module<IdleController>().unmock().luaAdd = 0;
@@ -176,23 +181,40 @@ static void ttClearIdle() {
   }
 }
 
+// Half-life peak decay: 'peak' falls to half its value after 'halfLifeMin'
+// minutes without a new reading at or above it. A transient spike no longer
+// counts forever, while a peak reached a few minutes before key-off still
+// weighs close to its real value.
+static void ttUpdatePeak(float& peak, float sample, float halfLifeMin, float dtSec) {
+  if (halfLifeMin <= 0) {
+    halfLifeMin = 0.01f;  // guard against division by zero
+  }
+  float halfLifeSec = halfLifeMin * 60.0f;
+  float decay = powf(0.5f, dtSec / halfLifeSec);
+  float decayed = peak * decay;
+  peak = sample > decayed ? sample : decayed;
+}
+
 static void turboTimerSlowCallback() {
   bool ign = isIgnVoltage();
   if (ttFirst) {
     ttPrevIgn = ign;
+    ttDecayTimer.reset();
     ttFirst = false;
   }
 
-  // --- aggiorna i picchi mentre il motore gira davvero ---
+  float dt = ttDecayTimer.getElapsedSeconds();
+  ttDecayTimer.reset();
+
+  // --- update the decaying peaks while the engine is actually running ---
   if (engine->rpmCalculator.isRunning()) {
-    float v;
-    v = Sensor::getOrZero(SensorType::EGT1);           if (v > ttPeakEgt) ttPeakEgt = v;
-    v = Sensor::getOrZero(SensorType::OilTemperature); if (v > ttPeakOil) ttPeakOil = v;
-    v = Sensor::getOrZero(SensorType::Clt);            if (v > ttPeakClt) ttPeakClt = v;
-    v = Sensor::getOrZero(SensorType::Map);            if (v > ttPeakMap) ttPeakMap = v;
+    ttUpdatePeak(ttPeakEgt, Sensor::getOrZero(SensorType::EGT1),           engineConfiguration->turboTimerEgtPeakWindowMin,   dt);
+    ttUpdatePeak(ttPeakOil, Sensor::getOrZero(SensorType::OilTemperature), engineConfiguration->turboTimerOilPeakWindowMin,   dt);
+    ttUpdatePeak(ttPeakClt, Sensor::getOrZero(SensorType::Clt),            engineConfiguration->turboTimerCltPeakWindowMin,   dt);
+    ttUpdatePeak(ttPeakMap, Sensor::getOrZero(SensorType::Map),            engineConfiguration->turboTimerBoostPeakWindowMin, dt);
   }
 
-  // --- transizione chiave ON -> OFF: decidi se avviare il countdown ---
+  // --- key ON -> OFF transition: decide whether to start the countdown ---
   if (ttPrevIgn && !ign
       && engineConfiguration->turboTimerEnabled
       && engine->rpmCalculator.isRunning()) {
@@ -209,11 +231,11 @@ static void turboTimerSlowCallback() {
     if (!anyUse || trig) {
       ttCountingDown = true;
       ttTimer.reset();
-      efiPrintf("TurboTimer: avviato per %d s", engineConfiguration->turboTimerDurationSec);
+      efiPrintf("TurboTimer: started for %d s", engineConfiguration->turboTimerDurationSec);
     }
   }
 
-  // --- transizione chiave OFF -> ON: nuova sessione, azzera i picchi ---
+  // --- key OFF -> ON transition: new session, clear peaks ---
   if (!ttPrevIgn && ign) {
     ttResetPeaks();
   }
@@ -224,49 +246,49 @@ static void turboTimerSlowCallback() {
     return;
   }
 
-  // --- condizioni di stop del countdown ---
-  if (ign) {  // chiave tornata su ON
-    efiPrintf("TurboTimer: chiave ON, interrompo");
+  // --- countdown stop conditions ---
+  if (ign) {  // key back ON
+    efiPrintf("TurboTimer: key ON, aborting");
     ttCountingDown = false;
     ttClearIdle();
     return;
   }
-  if (engine->rpmCalculator.isStopped()) {  // motore fermo: niente da raffreddare
-    efiPrintf("TurboTimer: motore fermo, interrompo");
+  if (engine->rpmCalculator.isStopped()) {  // engine stopped: nothing left to cool
+    efiPrintf("TurboTimer: engine stopped, aborting");
     ttCountingDown = false;
     ttClearIdle();
     return;
   }
   if (ttTimer.getElapsedSeconds() >= engineConfiguration->turboTimerDurationSec) {
-    efiPrintf("TurboTimer: countdown finito, rilascio il relay");
+    efiPrintf("TurboTimer: countdown finished, releasing relay");
     ttCountingDown = false;
     ttClearIdle();
     return;
   }
 
-  // --- BYPASS MAIN RELAY: tieni ECU e motore alimentati ---
+  // --- MAIN RELAY BYPASS: keep the ECU and engine powered ---
   enginePins.mainRelay.setValue("tt", true);
 
-  // --- minimo alzato (loop proporzionale clampato su luaAdd) ---
+  // --- raised idle (proportional loop clamped on luaAdd) ---
   if (engineConfiguration->turboTimerRaiseIdle
       && engineConfiguration->turboTimerIdleRpm > 0) {
     float target = engineConfiguration->turboTimerIdleRpm;
     float rpm = Sensor::getOrZero(SensorType::Rpm);
-    if (rpm > 50) {  // lettura RPM plausibile
+    if (rpm > 50) {  // plausible RPM reading
       auto& add = engine->module<IdleController>().unmock().luaAdd;
-      float step = (target - rpm) * 0.01f;      // passo proporzionale
-      if (step > 0.5f)  step = 0.5f;            // max +0.5% per ciclo (20 Hz)
+      float step = (target - rpm) * 0.01f;      // proportional step
+      if (step > 0.5f)  step = 0.5f;            // max +0.5% per cycle (20 Hz)
       if (step < -0.5f) step = -0.5f;
       add += step;
       if (add < 0)     add = 0;
-      if (add > 40.0f) add = 40.0f;             // clamp duro di sicurezza
+      if (add > 40.0f) add = 40.0f;             // hard safety clamp
       ttWeRaisedIdle = true;
     }
   } else {
     ttClearIdle();
   }
 }
-// ===================== FINE TURBO TIMER =====================
+// ===================== END TURBO TIMER =====================
 
 void setup_custom_board_overrides() {
   setupBoardHardwareTestOverrides();
