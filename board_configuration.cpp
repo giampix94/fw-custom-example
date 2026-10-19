@@ -16,6 +16,9 @@
 
 #include "pch.h"
 #include "board_overrides.h"
+#include "ignition_controller.h"
+#include "idle_thread.h"
+#include <rusefi/timer.h>
 
 void setupBoardHardwareTestOverrides();
 void initMs5611Baro();  // definita in ms5611.cpp
@@ -132,10 +135,144 @@ static void customBoardDefaultConfiguration() {
   engineConfiguration->isSdCardEnabled = false;
 }
 
+// ======================= TURBO TIMER =======================
+// Tiene il motore acceso per turboTimerDurationSec dopo il key-off, per far
+// raffreddare il turbo. Campi in board_engine_configuration.txt, UI in
+// board_panels.ini / board_menu.ini.
+//
+// Gira in coda a doPeriodicSlowCallback (dopo MainRelayController), quindi:
+//  - il BYPASS del main relay e' deterministico: riscriviamo il pin dopo che
+//    il controller del relay lo ha gia' aggiornato [engine.cpp, commento
+//    "after modules and board code"];
+//  - rusEFI NON taglia iniezione/accensione al key-off (checkShutdown() e'
+//    codice morto [engine.cpp]), quindi il motore resta vivo finche' gira.
+//
+// Criteri di attivazione: valutati sul PICCO raggiunto durante la guida.
+// Nessun criterio selezionato -> timer classico (sempre attivo al key-off).
+//
+// Minimo alzato: loop proporzionale CLAMPATO su luaAdd (l'ingresso che rusEFI
+// espone a Lua per aggiungere aria al minimo [idle_thread.cpp]). Il clamp duro
+// su luaAdd (max 40%) e' la sicurezza: neanche una lettura RPM errata puo'
+// spalancare la valvola. La casella giri in TS si sblocca solo se un'uscita
+// minimo e' assegnata.
+
+static bool  ttCountingDown = false;
+static bool  ttPrevIgn      = false;
+static bool  ttFirst        = true;
+static bool  ttWeRaisedIdle = false;
+static Timer ttTimer;
+static float ttPeakEgt = 0, ttPeakOil = 0, ttPeakClt = 0, ttPeakMap = 0;
+
+static void ttResetPeaks() {
+  ttPeakEgt = ttPeakOil = ttPeakClt = ttPeakMap = 0;
+}
+
+// Azzera il bump di minimo SOLO se siamo stati noi ad applicarlo, per non
+// calpestare un eventuale setIdleAdd fatto da Lua durante il normale uso.
+static void ttClearIdle() {
+  if (ttWeRaisedIdle) {
+    engine->module<IdleController>().unmock().luaAdd = 0;
+    ttWeRaisedIdle = false;
+  }
+}
+
+static void turboTimerSlowCallback() {
+  bool ign = isIgnVoltage();
+  if (ttFirst) {
+    ttPrevIgn = ign;
+    ttFirst = false;
+  }
+
+  // --- aggiorna i picchi mentre il motore gira davvero ---
+  if (engine->rpmCalculator.isRunning()) {
+    float v;
+    v = Sensor::getOrZero(SensorType::EGT1);           if (v > ttPeakEgt) ttPeakEgt = v;
+    v = Sensor::getOrZero(SensorType::OilTemperature); if (v > ttPeakOil) ttPeakOil = v;
+    v = Sensor::getOrZero(SensorType::Clt);            if (v > ttPeakClt) ttPeakClt = v;
+    v = Sensor::getOrZero(SensorType::Map);            if (v > ttPeakMap) ttPeakMap = v;
+  }
+
+  // --- transizione chiave ON -> OFF: decidi se avviare il countdown ---
+  if (ttPrevIgn && !ign
+      && engineConfiguration->turboTimerEnabled
+      && engine->rpmCalculator.isRunning()) {
+    bool useEgt   = engineConfiguration->turboTimerUseEgt;
+    bool useOil   = engineConfiguration->turboTimerUseOilTemp;
+    bool useClt   = engineConfiguration->turboTimerUseClt;
+    bool useBoost = engineConfiguration->turboTimerUseBoost;
+    bool anyUse   = useEgt || useOil || useClt || useBoost;
+    bool trig =
+      (useEgt   && ttPeakEgt > engineConfiguration->turboTimerEgtThreshold)     ||
+      (useOil   && ttPeakOil > engineConfiguration->turboTimerOilTempThreshold) ||
+      (useClt   && ttPeakClt > engineConfiguration->turboTimerCltThreshold)     ||
+      (useBoost && ttPeakMap > engineConfiguration->turboTimerBoostThreshold);
+    if (!anyUse || trig) {
+      ttCountingDown = true;
+      ttTimer.reset();
+      efiPrintf("TurboTimer: avviato per %d s", engineConfiguration->turboTimerDurationSec);
+    }
+  }
+
+  // --- transizione chiave OFF -> ON: nuova sessione, azzera i picchi ---
+  if (!ttPrevIgn && ign) {
+    ttResetPeaks();
+  }
+  ttPrevIgn = ign;
+
+  if (!ttCountingDown) {
+    ttClearIdle();
+    return;
+  }
+
+  // --- condizioni di stop del countdown ---
+  if (ign) {  // chiave tornata su ON
+    efiPrintf("TurboTimer: chiave ON, interrompo");
+    ttCountingDown = false;
+    ttClearIdle();
+    return;
+  }
+  if (engine->rpmCalculator.isStopped()) {  // motore fermo: niente da raffreddare
+    efiPrintf("TurboTimer: motore fermo, interrompo");
+    ttCountingDown = false;
+    ttClearIdle();
+    return;
+  }
+  if (ttTimer.getElapsedSeconds() >= engineConfiguration->turboTimerDurationSec) {
+    efiPrintf("TurboTimer: countdown finito, rilascio il relay");
+    ttCountingDown = false;
+    ttClearIdle();
+    return;
+  }
+
+  // --- BYPASS MAIN RELAY: tieni ECU e motore alimentati ---
+  enginePins.mainRelay.setValue("tt", true);
+
+  // --- minimo alzato (loop proporzionale clampato su luaAdd) ---
+  if (engineConfiguration->turboTimerRaiseIdle
+      && engineConfiguration->turboTimerIdleRpm > 0) {
+    float target = engineConfiguration->turboTimerIdleRpm;
+    float rpm = Sensor::getOrZero(SensorType::Rpm);
+    if (rpm > 50) {  // lettura RPM plausibile
+      auto& add = engine->module<IdleController>().unmock().luaAdd;
+      float step = (target - rpm) * 0.01f;      // passo proporzionale
+      if (step > 0.5f)  step = 0.5f;            // max +0.5% per ciclo (20 Hz)
+      if (step < -0.5f) step = -0.5f;
+      add += step;
+      if (add < 0)     add = 0;
+      if (add > 40.0f) add = 40.0f;             // clamp duro di sicurezza
+      ttWeRaisedIdle = true;
+    }
+  } else {
+    ttClearIdle();
+  }
+}
+// ===================== FINE TURBO TIMER =====================
+
 void setup_custom_board_overrides() {
   setupBoardHardwareTestOverrides();
   custom_board_DefaultConfiguration = customBoardDefaultConfiguration;
   custom_board_getAnalogInputDividerCoefficient = protoGetAnalogInputDividerCoefficient;
   custom_board_getThermistorSupplyVoltage = protoGetThermistorSupplyVoltage;
   custom_board_InitHardware = initMs5611Baro;  // baro MS5611 su I2C bit-bang PF0/PF1
+  custom_board_periodicSlowCallback = turboTimerSlowCallback;  // turbo timer
 }
