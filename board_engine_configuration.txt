@@ -5,10 +5,11 @@
 ! is evaluated on a decaying peak reached while driving, not a flat maximum
 ! over the whole session: every criterion has its own half-life window.
 !
-! NOTE: this file is registered before the shared @@...@@ constants prepend
+! NOTE: this file is registered before the shared constants prepend
 ! (gen_config_common.sh: BOARD_ENGINE_CONFIGURATION_FROM_FILE at line 60,
 ! rusefi_config_shared.txt prepend at line 93), so UNITS_KPA_TO_PSI (0.145038)
-! and MAP_UPPER_LIMIT (650) below are written as literals, not @@macros@@.
+! and MAP_UPPER_LIMIT (650) below are written as literal numbers, not as
+! template substitution tokens.
 bit turboTimerEnabled,"Enabled","Disabled"
 bit turboTimerUseEgt,"Yes","No"
 bit turboTimerUseOilTemp,"Yes","No"
