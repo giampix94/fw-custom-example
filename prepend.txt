@@ -1,3 +1,7 @@
+
+! ECUstm32: buffer Lua ingrandito per lo script CAN embedded (default_script.lua).
+! Default rusEFI = 8000 [rusefi_config_shared.txt]; script ~18 KB. Proteus F7 usa 48000.
+#define LUA_SCRIPT_SIZE 24000
 ! example of .ini file templating option
 #define ts_show_etb_pins false
 
