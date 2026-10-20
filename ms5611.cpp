@@ -33,6 +33,30 @@
  * ripubblica l'ultimo valore buono), a meno che lo scostamento non si confermi
  * su CONFIRM_SAMPLES campioni consecutivi concordi (allora e' un cambio vero,
  * es. variazione di quota, non un glitch del bus).
+ * Questo filtro attenua solo gli scostamenti grandi (> MAX_STEP_KPA): non tocca
+ * la causa (clock del bus fuori specifica), quindi un bit corrotto che sposta la
+ * pressione di una quantita' piccola (sotto soglia) passa comunque - vedi fix
+ * sotto.
+ *
+ * Fix timing bus (2026-10-20):
+ * waitQuarterBit() di BitbangI2c e' virtual (ext/rusefi/firmware/hw_layer/drivers/
+ * i2c/i2c_bb.h) quindi la sovrascriviamo in una sottoclasse locale, senza toccare
+ * il submodule. L'originale conta NOP (30 iterazioni), un conteggio di istruzioni
+ * non e' una misura di tempo affidabile (dipende da pipeline/wait-state flash, che
+ * NON e' detto scali allo stesso modo tra F4 e F7): usiamo invece il cycle counter
+ * hardware DWT->CYCCNT (gia' usato in ext/rusefi/firmware/hw_layer/ports/stm32/
+ * stm32_common.cpp, baseMCUInit(), anche se li' solo azzerato, non abilitato -
+ * CYCCNTENA/TRCENA non risultano abilitati altrove nel codice, quindi lo abilitiamo
+ * qui), che conta cicli di clock reali indipendentemente dal pipeline.
+ * MS5611_TARGET_HZ = 350000 e' una soglia di progetto con margine sotto il limite
+ * 400kHz del datasheet [DS Fig.4 pag.9] - NON e' un valore da datasheet, e NON e'
+ * stato verificato su oscilloscopio/logic analyzer: verificare SCL reale dopo il
+ * flash prima di considerarlo chiuso.
+ * MS5611_SYSCLK_HZ = 216000000 e' il SYSCLK di questo progetto (PLLM=6, PLLN=216,
+ * PLLP=2 -> 216 MHz, decisione rev2 gia' chiusa in questo progetto), non una
+ * costante del datasheet.
+ * Questo fix corregge la causa (clock del bus), il filtro anti-glitch del 17/10
+ * resta comunque attivo come seconda rete di sicurezza.
  */
 
 #include "pch.h"
@@ -58,14 +82,64 @@ static constexpr int CONVERSION_WAIT_MS = 10;
 static constexpr float MAX_STEP_KPA = 3.0f;
 static constexpr int CONFIRM_SAMPLES = 3;
 
+// --- Fix timing bus bit-bang (vedi nota "Fix timing bus" in testa al file) ----
+// SYSCLK di questo progetto (decisione rev2: PLLM=6, PLLN=216, PLLP=2 -> 216MHz),
+// non una costante da datasheet.
+static constexpr uint32_t MS5611_SYSCLK_HZ = 216000000UL;
+// Soglia di progetto con margine sotto il limite 400kHz del datasheet MS5611
+// [DS Fig.4 pag.9] - NON verificata su oscilloscopio.
+static constexpr uint32_t MS5611_TARGET_HZ = 350000UL;
+// 1 bit I2C = 4 quarter-bit (vedi sendBit()/readBit() in i2c_bb.cpp): periodo SCL
+// = 4 * T_quarter -> cicli per quarter-bit = SYSCLK / (TARGET_HZ * 4), arrotondato
+// per eccesso cosi' la frequenza reale resta <= TARGET_HZ (mai sopra).
+static constexpr uint32_t MS5611_QUARTER_BIT_DENOM = MS5611_TARGET_HZ * 4UL;
+static constexpr uint32_t MS5611_CYCLES_PER_QUARTER_BIT =
+	(MS5611_SYSCLK_HZ + MS5611_QUARTER_BIT_DENOM - 1UL) / MS5611_QUARTER_BIT_DENOM;
+
+#if EFI_PROD_CODE
+// Abilita il cycle counter DWT una sola volta. Senza questo, DWT->CYCCNT resta a
+// zero (CYCCNTENA=0 di default, vedi nota in testa al file) e un busy-wait su di
+// esso si blocca per sempre: va abilitato esplicitamente, non e' gia' acceso da
+// nessun'altra parte del codice rusEFI.
+static void ms5611EnableCycleCounterOnce() {
+	static bool enabled = false;
+	if (enabled) {
+		return;
+	}
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CYCCNT = 0;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	enabled = true;
+}
+#endif
+
+// Sottoclasse locale di BitbangI2c (board overlay, non tocca il submodule):
+// waitQuarterBit() e' virtual apposta per questo in i2c_bb.h. Sostituisce il
+// conteggio di NOP dell'originale con un'attesa in cicli di clock reali (DWT),
+// calibrata sul nostro SYSCLK - vedi nota "Fix timing bus" in testa al file.
+class Ms5611BitbangI2c : public BitbangI2c {
+protected:
+	void waitQuarterBit() override {
+#if EFI_PROD_CODE
+		uint32_t start = DWT->CYCCNT;
+		while ((uint32_t)(DWT->CYCCNT - start) < MS5611_CYCLES_PER_QUARTER_BIT) {
+			// busy-wait sui cicli di clock reali
+		}
+#endif
+	}
+};
+
 // Bus bit-bang dedicato al baro (self-contained, solo GPIO).
-static BitbangI2c ms5611bus;
+static Ms5611BitbangI2c ms5611bus;
 
 class Ms5611 : public StoredValueSensor {
 public:
 	Ms5611() : StoredValueSensor(SensorType::BarometricPressure, MS2NT(1000)) { }
 
 	bool init(brain_pin_e scl, brain_pin_e sda) {
+#if EFI_PROD_CODE
+		ms5611EnableCycleCounterOnce();
+#endif
 		// crea il bus bit-bang su quei pin
 		if (!ms5611bus.init(scl, sda, I2C_SPEED_400K)) {
 			efiPrintf("MS5611: init bus bit-bang fallita");
