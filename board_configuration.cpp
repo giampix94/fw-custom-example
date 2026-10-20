@@ -18,6 +18,7 @@
 #include "board_overrides.h"
 #include "ignition_controller.h"
 #include "idle_thread.h"
+#include "settings.h"
 #include <rusefi/timer.h>
 #include <cmath>
 
@@ -135,6 +136,37 @@ static void customBoardDefaultConfiguration() {
 
   engineConfiguration->isSdCardEnabled = false;
 }
+
+// ======================= FIX: Lua script embedded perso al boot =======================
+// SINTOMO: rusEFI Console, tab "Lua Scripting" -> "LUA loading script length: 0..."
+// sempre, anche dopo full chip erase + reflash.
+//
+// CAUSA (verificata sul sorgente rusefi/rusefi): il nostro default_script.lua chiama
+// setLuaScript(...) dentro "#include <default_script.lua>", risolto (BOARDINC) DENTRO
+// setDefaultEngineConfiguration() [rusefi firmware/controllers/algo/engine_configuration.cpp,
+// fine funzione]. Quella scrittura viene pero' IMMEDIATAMENTE svuotata dalla chiamata
+// successiva, nella stessa resetConfigurationExt(), a resetExtraPages() ->
+// luaConfigPageSetDefaults() [firmware/controllers/extra_flash_pages.cpp:24-26, commento:
+// "Set default values (empty script)"].
+// Per il nostro engine_type_e (gruppo dei tipi "generici": MINIMAL_PINS e affini),
+// applyEngineType() non reinstalla alcuno script -- commento esplicito nel suo switch:
+// "all basic settings are already set ... nothing to do"
+// [firmware/controllers/algo/engine_type_impl.cpp]. Quindi lo script resta vuoto SEMPRE,
+// indipendentemente da quante volte si fa erase: non e' un problema di erase incompleto,
+// e' l'ordine delle chiamate del firmware core.
+//
+// CORREZIONE alla documentazione precedente: il commento originale in default_script.lua
+// ("Installato da setLuaScript() durante applyEngineType()") era sbagliato -- l'#include
+// gira in setDefaultEngineConfiguration(), non in applyEngineType().
+//
+// FIX: applyEngineType() chiama SEMPRE, come ultima riga, custom_board_AfterTuneDefaults
+// [engine_type_impl.cpp:430] -- cioe' DOPO resetExtraPages(). Reinstalliamo qui lo stesso
+// script (stesso #include, stesso contenuto di default_script.lua), cosi' la scrittura
+// arriva per ultima e sopravvive al reset.
+static void installDefaultLuaScriptAfterTuneDefaults(engine_type_e) {
+  #include <default_script.lua>
+}
+// ===================== FINE FIX Lua script =====================
 
 // ======================= TURBO TIMER =======================
 // Keeps the engine running for turboTimerDurationSec after key-off, to let the
@@ -297,4 +329,5 @@ void setup_custom_board_overrides() {
   custom_board_getThermistorSupplyVoltage = protoGetThermistorSupplyVoltage;
   custom_board_InitHardware = initMs5611Baro;  // baro MS5611 su I2C bit-bang PF0/PF1
   custom_board_periodicSlowCallback = turboTimerSlowCallback;  // turbo timer
+  custom_board_AfterTuneDefaults = installDefaultLuaScriptAfterTuneDefaults;  // fix Lua script perso al boot
 }
