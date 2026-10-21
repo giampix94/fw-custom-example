@@ -71,18 +71,22 @@ uint8_t alsCanL4IgnCutPct;Livello 4 - percentuale di colpi di accensione saltati
 int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
 ! === TC CAN-BUS (controllo trazione, pilotato da CAN 0x200 byte 3 "tcLevel") ===
 ! Verificato sul commit pinnato rusEFI (a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7,
-! firmware/integration/rusefi_config.txt, riga 1132, campo antiLagActivationMode_e)
-! che il pattern "custom NOME_ENUM N bits, TIPO, offset, [a:b]" seguito dal
-! riferimento al blocco opzioni e' quello reale usato per i selettori a scelta
-! multipla (vedi uso effettivo su tcCanDrivetrain_e/tcCanMethod_e piu' sotto).
-! CORREZIONE (build #44, commit 9b2edc6): la riga precedente riportava qui per
-! esteso il token di sostituzione con le doppie @, e il generatore (che registra
-! l'intero file come un'unica stringa PRIMA di interpretare i commenti) lo ha
-! interpretato come un riferimento da risolvere, con errore "No such variable:
-! [<enum>_enum]" (ConfigDefinition, BOARD_ENGINE_CONFIGURATION_FROM_FILE).
-! Il file board-specifico passa per lo stesso generatore (gen_config_common.sh,
-! BOARD_ENGINE_CONFIGURATION_FROM_FILE), quindi nessun commento in questo file
-! deve mai contenere una coppia di doppie @ non destinata a essere risolta.
+! firmware/integration/rusefi_config.txt) che per i selettori a scelta multipla
+! "custom NOME_ENUM N bits, TIPO, @OFFSET@, [a:b], <lista opzioni>" e' il pattern
+! reale (es. air_pressure_sensor_type_e riga 503, ignition_mode_e riga 752,
+! can_nbc_e riga 764: tutti con la lista opzioni scritta INLINE, parola per
+! parola tra virgolette, non tramite un #define richiamato altrove).
+! CORREZIONE #2 (build #47, commit 311cb27): qui sotto si era usato un #define
+! tcCanDrivetrain_e_enum / tcCanMethod_e_enum richiamato con il doppio simbolo
+! at (pattern visto a riga 1132, antiLagActivationMode_e) - ma quel file e'
+! processato in modo diverso. board_engine_configuration.txt viene letto per
+! intero come UN'UNICA stringa (-readfile BOARD_ENGINE_CONFIGURATION_FROM_FILE,
+! gen_config_common.sh riga 60) e il richiamo tramite doppio at viene risolto su
+! quella stringa PRIMA che le righe #define al suo interno vengano registrate:
+! un #define nello stesso file non e' quindi mai visibile al proprio richiamo,
+! con errore "No such variable" (VariableRegistry.applyVariables). Per questo
+! motivo sotto si usa la lista opzioni inline, come negli esempi reali citati
+! sopra - nessun #define, nessun richiamo con il doppio at in questo file.
 !
 ! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
 ! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
@@ -95,11 +99,9 @@ int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1,
 ! Layout di trazione selezionabile A RUNTIME in TunerStudio (non a compilazione):
 ! la stessa ECU puo' passare da un'auto 2WD a una 4WD senza ricompilare.
 bit tcCanEnabled,"Enabled","Disabled"
-#define tcCanDrivetrain_e_enum "2WD Anteriore", "2WD Posteriore", "4WD"
-custom tcCanDrivetrain_e 1 bits, U08, @OFFSET@, [0:1], @@tcCanDrivetrain_e_enum@@
+custom tcCanDrivetrain_e 1 bits, U08, @OFFSET@, [0:1], "2WD Anteriore", "2WD Posteriore", "4WD"
 tcCanDrivetrain_e tcCanDrivetrainLayout;
-#define tcCanMethod_e_enum "Slittamento % fisso (v1)", "Rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo)"
-custom tcCanMethod_e 1 bits, U08, @OFFSET@, [0:1], @@tcCanMethod_e_enum@@
+custom tcCanMethod_e 1 bits, U08, @OFFSET@, [0:1], "Slittamento % fisso (v1)", "Rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo)"
 tcCanMethod_e tcCanInterventionMethod;
 uint8_t tcCanMinSpeedKmh;Velocita' minima vettura sotto la quale il TC non interviene (evita falsi slittamenti da fermo o in manovra).;"km/h", 1, 0, 0, 100, 0
 ! --- Target di slittamento per livello (0-5, da CAN 0x200 byte 3, saturato su CFG.maxTc=5) ---
