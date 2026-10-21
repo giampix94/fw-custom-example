@@ -71,11 +71,18 @@ uint8_t alsCanL4IgnCutPct;Livello 4 - percentuale di colpi di accensione saltati
 int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
 ! === TC CAN-BUS (controllo trazione, pilotato da CAN 0x200 byte 3 "tcLevel") ===
 ! Verificato sul commit pinnato rusEFI (a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7,
-! firmware/integration/rusefi_config.txt) che la sintassi "custom <enum> N bits,
-! <ctype>, @OFFSET@, [a:b], @@<enum>_enum@@" e' quella reale usata per i selettori
-! a scelta multipla (es. antiLagActivationMode_e, riga 1132). Il file board-specifico
-! passa per lo stesso generatore (gen_config_common.sh, BOARD_ENGINE_CONFIGURATION_FROM_FILE),
-! quindi la sintassi e' valida anche qui.
+! firmware/integration/rusefi_config.txt, riga 1132, campo antiLagActivationMode_e)
+! che il pattern "custom NOME_ENUM N bits, TIPO, offset, [a:b]" seguito dal
+! riferimento al blocco opzioni e' quello reale usato per i selettori a scelta
+! multipla (vedi uso effettivo su tcCanDrivetrain_e/tcCanMethod_e piu' sotto).
+! CORREZIONE (build #44, commit 9b2edc6): la riga precedente riportava qui per
+! esteso il token di sostituzione con le doppie @, e il generatore (che registra
+! l'intero file come un'unica stringa PRIMA di interpretare i commenti) lo ha
+! interpretato come un riferimento da risolvere, con errore "No such variable:
+! [<enum>_enum]" (ConfigDefinition, BOARD_ENGINE_CONFIGURATION_FROM_FILE).
+! Il file board-specifico passa per lo stesso generatore (gen_config_common.sh,
+! BOARD_ENGINE_CONFIGURATION_FROM_FILE), quindi nessun commento in questo file
+! deve mai contenere una coppia di doppie @ non destinata a essere risolta.
 !
 ! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
 ! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
