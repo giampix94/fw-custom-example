@@ -27,9 +27,13 @@ uint16_t turboTimerOilPeakWindowMin;Half-life of the oil temperature peak decay:
 uint16_t turboTimerCltPeakWindowMin;Half-life of the coolant temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 uint16_t turboTimerBoostPeakWindowMin;Half-life of the boost peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 ! === ALS CAN-BUS (anti-lag parallelo, pilotato da CAN 0x200 tramite console esterna) ===
-! Sistema di anti-lag indipendente dall'antilag nativo rusEFI (quello nativo e'
-! confermato inerte nel commit pinnato ext/rusefi a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7:
-! il codice che consumerebbe antiLagEnabled/ALS* e' commentato in spark_logic.cpp).
+! Sistema di anti-lag indipendente dall'antilag nativo rusEFI. CORREZIONE (rispetto alla
+! nota precedente "nativo confermato inerte"): solo la parte ACCENSIONE del nativo e'
+! morta (spark_logic.cpp:676-681, dietro #if EFI_ANTILAG_SYSTEM && EFI_LAUNCH_CONTROL).
+! ETB (ALSEtbAdd, electronic_throttle.cpp:340-345), idle (ALSIdleAdd, idle_thread.cpp:
+! 189-193) e fuel (ALSFuelAdjustment, fuel_math.cpp:477-488) del nativo sono invece
+! codice VIVO, dietro #if EFI_ANTILAG_SYSTEM (nessun commento). Nessun conflitto oggi
+! solo perche' antiLagEnabled resta spento [rusefi/rusefi @ a2d8784].
 ! Il livello (1-4, non cumulativo: ogni livello sovrascrive il precedente) arriva
 ! via CAN 0x200 (campo alsLevel), decodificato dallo script Lua (ecu_can_protocol.lua)
 ! e passato al dispatcher nativo C++ (alsCanSlowCallback, in board_configuration.cpp)
@@ -39,12 +43,22 @@ uint16_t turboTimerBoostPeakWindowMin;Half-life of the boost peak decay: a peak 
 ! ALSActivatePin e' elettricamente attivo (verifica in corso, task #14).
 ! NOTA: rusEFI non ha un meccanismo di "Fuel Cut %" continuo come MoTeC (solo
 ! setFuelDisabled booleano tutto/niente) [rusefi/rusefi @ a2d8784, lua_hooks.cpp].
-! La tabella non include quindi una uscita "fuel cut": il fenomeno "bang" e'
-! ottenuto da Ignition Cut % + Timing Limit, non dal fuel cut.
+! Il "bang" e' quindi ottenuto da Ignition Cut % + Timing Limit, non dal fuel cut; la
+! tabella Fuel Adjustment per livello (sotto) e' una correzione fine, non un cut.
+! Idle Air Add / ETB Air Add: stessa funzione delle omonime native (ALSIdleAdd/
+! ALSEtbAdd) ma UNA PER LIVELLO qui, non uno scalare unico come nel nativo. Servono a
+! far si' che il minimo e la farfalla "sappiano" che e' in corso un intervento ALS,
+! altrimenti il taglio accensione/boost rischia di far scendere troppo i giri o
+! spegnere il motore.
 ! NOTE: questo file e' registrato prima del prepend delle costanti condivise
 ! (gen_config_common.sh: BOARD_ENGINE_CONFIGURATION_FROM_FILE riga 60,
 ! rusefi_config_shared.txt prepend riga 93).
 bit alsCanEnabled,"Enabled","Disabled"
+! --- Sorgente dati: CAN ID 0x200, NON il CAN-RX standard di TunerStudio. ---
+! Questo pannello non ha un campo "seleziona frame CAN" perche' alsLevel non passa dal
+! meccanismo CAN-RX nativo di TunerStudio: arriva dal frame 0x200, decodificato dallo
+! script Lua ecu_can_protocol.lua e portato qui via canali LuaGauge. Non c'e' nulla da
+! selezionare in questo dialog per la sorgente dati.
 ! --- Condizioni di Arm/Enable/Disable (finestra operativa, comuni a tutti i livelli) ---
 uint16_t alsCanArmTps;Soglia TPS sopra la quale il sistema si arma.;"%", 1, 0, 0, 100, 0
 uint16_t alsCanArmDelayMs;Tempo minimo sopra la soglia TPS prima dell'armo.;"ms", 1, 0, 0, 5000, 0
@@ -60,39 +74,60 @@ uint16_t alsCanPostDisableSec;Durata del limite post-disattivazione.;"s", 1, 0, 
 int16_t alsCanL1TimingLimit;Livello 1 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
 uint8_t alsCanL1IgnCutPct;Livello 1 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL1BoostAimAdd;Livello 1 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+uint8_t alsCanL1IdleAdd;Livello 1 - aggiunta aria al minimo durante l'attivazione (come ALSIdleAdd nativo, idle_thread.cpp:189-193). Evita che il motore scenda troppo di giri o si spenga durante il taglio.;"%", 1, 0, 0, 100, 0
+uint8_t alsCanL1EtbAdd;Livello 1 - aggiunta al target farfalla durante l'attivazione (come ALSEtbAdd nativo, electronic_throttle.cpp:340-345).;"%", 1, 0, 0, 100, 0
 int16_t alsCanL2TimingLimit;Livello 2 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
 uint8_t alsCanL2IgnCutPct;Livello 2 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL2BoostAimAdd;Livello 2 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+uint8_t alsCanL2IdleAdd;Livello 2 - aggiunta aria al minimo durante l'attivazione.;"%", 1, 0, 0, 100, 0
+uint8_t alsCanL2EtbAdd;Livello 2 - aggiunta al target farfalla durante l'attivazione.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL3TimingLimit;Livello 3 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
 uint8_t alsCanL3IgnCutPct;Livello 3 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL3BoostAimAdd;Livello 3 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+uint8_t alsCanL3IdleAdd;Livello 3 - aggiunta aria al minimo durante l'attivazione.;"%", 1, 0, 0, 100, 0
+uint8_t alsCanL3EtbAdd;Livello 3 - aggiunta al target farfalla durante l'attivazione.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL4TimingLimit;Livello 4 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
 uint8_t alsCanL4IgnCutPct;Livello 4 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
 int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+uint8_t alsCanL4IdleAdd;Livello 4 - aggiunta aria al minimo durante l'attivazione.;"%", 1, 0, 0, 100, 0
+uint8_t alsCanL4EtbAdd;Livello 4 - aggiunta al target farfalla durante l'attivazione.;"%", 1, 0, 0, 100, 0
+! --- Tabelle 2D RPM x TPS per livello: Fuel Adjustment e Ignition Adjustment ---
+! Una tabella per livello (non una sola come il nativo ALSFuelAdjustment/
+! ALSTimingRetardTable) per decisione esplicita di Giampiero. Assi RPM/TPS condivisi fra
+! tutte le 8 tabelle (4 fuel + 4 ign). Range e scala del contenuto ripresi 1:1 dalle
+! tabelle native omologhe [rusefi_config.txt:2331-2335] - nessun valore di taratura
+! inventato, solo la struttura; i valori li inserisci tu a banco/pista.
+#define ALS_CAN_ADJ_RPM_SIZE 4
+#define ALS_CAN_ADJ_TPS_SIZE 4
+uint16_t[ALS_CAN_ADJ_RPM_SIZE] alsCanAdjRpmBins;;"RPM", 1, 0, 0, 12000, 0
+uint16_t[ALS_CAN_ADJ_TPS_SIZE] alsCanAdjTpsBins;;"%", 1, 0, 0, 100, 0
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL1FuelAdjustmentTable;;"percent", 0.1, 0, 0, 50, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL1IgnAdjustmentTable;;"deg", 0.1, 0, -60, 0, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL2FuelAdjustmentTable;;"percent", 0.1, 0, 0, 50, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL2IgnAdjustmentTable;;"deg", 0.1, 0, -60, 0, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL3FuelAdjustmentTable;;"percent", 0.1, 0, 0, 50, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL3IgnAdjustmentTable;;"deg", 0.1, 0, -60, 0, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL4FuelAdjustmentTable;;"percent", 0.1, 0, 0, 50, 1
+int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL4IgnAdjustmentTable;;"deg", 0.1, 0, -60, 0, 1
 ! === TC CAN-BUS (controllo trazione, pilotato da CAN 0x200 byte 3 "tcLevel") ===
-! Verificato sul commit pinnato rusEFI (a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7,
-! firmware/integration/rusefi_config.txt) che per i selettori a scelta multipla
-! "custom NOME_ENUM N bits, TIPO, @OFFSET@, [a:b], <lista opzioni>" e' il pattern
-! reale, MA richiede che il tipo C NOME_ENUM esista gia' come
-! "typedef enum __attribute__ ((__packed__)) {...} NOME_ENUM;" in un header C++
-! visibile al compilatore (es. antiLagActivationMode_e e' dichiarato cosi' in
-! controllers/algo/rusefi_enums.h, riga 669 - non generato automaticamente da
-! questo file).
-! CORREZIONE #3 (build #48, commit 16411a2): con la lista opzioni inline ma
-! senza quel typedef C++, la generazione del config passa ma la compilazione
-! del firmware fallisce con "'tcCanDrivetrain_e' does not name a type" /
-! "'tcCanMethod_e' does not name a type" (header generato
-! engine_configuration_generated_structures_ecustm32_proto.h). Non essendoci
-! ancora un header board-specifico verificato come incluso in quel punto della
-! catena di compilazione, qui sotto i due campi sono temporaneamente uint8_t
-! semplici (0/1/2), non un custom enum: nessun tipo C da dichiarare altrove,
-! zero rischio di questa classe di errore. La UI a tendina in TunerStudio (via
-! picklist) e' una modifica separata, solo lato .ini, da aggiungere dopo.
+! Sorgente dati: CAN ID 0x200, NON il CAN-RX standard di TunerStudio (stesso discorso
+! di ALS-CAN sopra) - decodificato da ecu_can_protocol.lua, portato qui via LuaGauge.
+!
+! CORREZIONE #4 (sostituisce CORREZIONE #3): i due campi sotto sono tornati a essere
+! menu a tendina reali (custom tcCanDrivetrain_e / tcCanMethod_e), non piu' uint8_t
+! semplici. Il blocco che mancava - un typedef C per il tipo custom, vedi CORREZIONE #3
+! - e' stato aggiunto in board_enums.h (file nostro, NON nel submodule ext/rusefi) e
+! iniettato nella generazione via CUSTOM_GEN_CONFIG=gen_config_custom.sh (board.mk),
+! hook verificato in rusefi_config.mk (submodule, pinnato
+! a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7, regola .config-sentinel): se
+! CUSTOM_GEN_CONFIG e' definita, Make chiama quello script invece del
+! gen_config_board.sh del submodule (che ha la sua lista -enumInputFile cablata,
+! righe 68-69, e non e' parametrizzabile da fuori). Nessuna modifica al submodule.
 !
 ! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
 ! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
 ! la marcia inserita in tempo reale, non disponibile in questo firmware
-! (ecu_can_protocol.lua: S.gear = nil, TODO). L'enum sotto lascia il posto riservato
+! (ecu_can_protocol.lua: S.gear = nil, TODO). L'opzione sotto lascia il posto riservato
 ! per passare al metodo MoTeC pieno quando la marcia sara' disponibile, senza
 ! rompere il layout (REGOLA 11 del protocollo CAN: un campo pubblicato non cambia
 ! mai struttura).
@@ -100,8 +135,10 @@ int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1,
 ! Layout di trazione selezionabile A RUNTIME in TunerStudio (non a compilazione):
 ! la stessa ECU puo' passare da un'auto 2WD a una 4WD senza ricompilare.
 bit tcCanEnabled,"Enabled","Disabled"
-uint8_t tcCanDrivetrainLayout;Layout di trazione, selezionabile a runtime: 0 = 2WD Anteriore, 1 = 2WD Posteriore, 2 = 4WD.;"", 1, 0, 0, 2, 0
-uint8_t tcCanInterventionMethod;Metodo di intervento: 0 = slittamento percentuale fisso (v1, attivo), 1 = rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo).;"", 1, 0, 0, 1, 0
+custom tcCanDrivetrain_e 1 bits, U08, @OFFSET@, [0:1], "2WD Anteriore", "2WD Posteriore", "4WD"
+tcCanDrivetrain_e tcCanDrivetrainLayout;Layout di trazione, selezionabile a runtime (la stessa ECU passa da 2WD a 4WD senza ricompilare).
+custom tcCanMethod_e 1 bits, U08, @OFFSET@, [0:1], "Slittamento % fisso (v1)", "Rapporto cambio / RPM zero-slittamento (riservato)"
+tcCanMethod_e tcCanInterventionMethod;Metodo di intervento TC. Il secondo (rapporto cambio) e' riservato: richiede la marcia inserita in tempo reale, non ancora disponibile nel firmware - non attivo.
 uint8_t tcCanMinSpeedKmh;Velocita' minima vettura sotto la quale il TC non interviene (evita falsi slittamenti da fermo o in manovra).;"km/h", 1, 0, 0, 100, 0
 ! --- Target di slittamento per livello (0-5, da CAN 0x200 byte 3, saturato su CFG.maxTc=5) ---
 ! Direzione di scala CONGELATA nel protocollo [ECU_FIRMWARE_LOGICHE_PROTOCOLLO.txt, par.8.1]:
@@ -115,6 +152,9 @@ uint8_t tcCanL4SlipTargetPct;Livello 4 - percentuale di slittamento ammessa prim
 uint8_t tcCanL5SlipTargetPct;Livello 5 (massima intrusivita') - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
 uint8_t tcCanRampOutPct;Velocita' di rientro della coppia dopo un intervento, percentuale per ciclo di controllo (stesso principio del "Ramp Out Rate" MoTeC).;"%", 1, 0, 1, 100, 0
 ! === WMI CAN-BUS (iniezione acqua/metanolo, pilotata da CAN 0x200 byte 0 bit 3 "cmdWmi") ===
+! Sorgente dati: CAN ID 0x200, NON il CAN-RX standard di TunerStudio (stesso discorso
+! di ALS-CAN/TC-CAN sopra) - decodificato da ecu_can_protocol.lua, portato qui via LuaGauge.
+!
 ! Modello confermato su pratica reale (non invenzione): mappa aggiuntiva di anticipo
 ! che si attiva SOLO a flusso/pressione confermati, rientro ISTANTANEO (non ramped)
 ! alla mappa base alla perdita di pressione [fonte: thread utente "Peter Partee",
@@ -129,7 +169,9 @@ uint8_t tcCanRampOutPct;Velocita' di rientro della coppia dopo un intervento, pe
 ! non uno swap di tabella.
 ! Sintassi tabella 2D ripresa identica da quella nativa gia' presente in rusEFI
 ! per l'antilag (ALSTimingRetardTable/alsIgnRetardLoadBins/alsIgnRetardrpmBins,
-! rusefi_config.txt riga 2331-2333) - stessa struttura, verificata.
+! rusefi_config.txt riga 2331-2333) - stessa struttura, verificata. L'editor grafico in
+! TunerStudio (board_tables.ini/board_panels.ini) era mancante nella prima versione:
+! il campo e la tabella esistevano nel config ma non erano esposti nel dialog - aggiunto.
 !
 ! Collisione di attuatore con ALS-CAN sullo stesso campo (luaTimingAdd): quando
 ! ALS-CAN e' attivo, WMI va sospeso (arbitraggio nel dispatcher C++, non qui).
