@@ -26,3 +26,108 @@ uint16_t turboTimerEgtPeakWindowMin;Half-life of the EGT peak decay: a peak lose
 uint16_t turboTimerOilPeakWindowMin;Half-life of the oil temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 uint16_t turboTimerCltPeakWindowMin;Half-life of the coolant temperature peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
 uint16_t turboTimerBoostPeakWindowMin;Half-life of the boost peak decay: a peak loses half its weight after this many minutes without a new high reading.;"min", 1, 0, 1, 30, 0
+! === ALS CAN-BUS (anti-lag parallelo, pilotato da CAN 0x200 tramite console esterna) ===
+! Sistema di anti-lag indipendente dall'antilag nativo rusEFI (quello nativo e'
+! confermato inerte nel commit pinnato ext/rusefi a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7:
+! il codice che consumerebbe antiLagEnabled/ALS* e' commentato in spark_logic.cpp).
+! Il livello (1-4, non cumulativo: ogni livello sovrascrive il precedente) arriva
+! via CAN 0x200 (campo alsLevel), decodificato dallo script Lua (ecu_can_protocol.lua)
+! e passato al dispatcher nativo C++ (alsCanSlowCallback, in board_configuration.cpp)
+! tramite i canali LuaGauge. L'attivazione segue RACE MODE (cmdRace), non un pulsante
+! dedicato: non esiste un tasto ALS separato sul tastierino (vedi handoff Race Console).
+! Mutua esclusione: ALS-CAN non si attiva se l'antilag nativo e' enablato E il pin
+! ALSActivatePin e' elettricamente attivo (verifica in corso, task #14).
+! NOTA: rusEFI non ha un meccanismo di "Fuel Cut %" continuo come MoTeC (solo
+! setFuelDisabled booleano tutto/niente) [rusefi/rusefi @ a2d8784, lua_hooks.cpp].
+! La tabella non include quindi una uscita "fuel cut": il fenomeno "bang" e'
+! ottenuto da Ignition Cut % + Timing Limit, non dal fuel cut.
+! NOTE: questo file e' registrato prima del prepend delle costanti condivise
+! (gen_config_common.sh: BOARD_ENGINE_CONFIGURATION_FROM_FILE riga 60,
+! rusefi_config_shared.txt prepend riga 93).
+bit alsCanEnabled,"Enabled","Disabled"
+! --- Condizioni di Arm/Enable/Disable (finestra operativa, comuni a tutti i livelli) ---
+uint16_t alsCanArmTps;Soglia TPS sopra la quale il sistema si arma.;"%", 1, 0, 0, 100, 0
+uint16_t alsCanArmDelayMs;Tempo minimo sopra la soglia TPS prima dell'armo.;"ms", 1, 0, 0, 5000, 0
+uint16_t alsCanMinRpm;RPM minimo per l'attivazione.;"RPM", 1, 0, 0, 8000, 0
+uint16_t alsCanMaxRpm;RPM massimo per l'attivazione.;"RPM", 1, 0, 0, 10000, 0
+int16_t alsCanMinClt;Temperatura minima liquido per l'attivazione.;"C", 1, 0, -40, 150, 0
+int16_t alsCanMaxClt;Temperatura massima liquido: disattiva se superata.;"C", 1, 0, -40, 150, 0
+uint16_t alsCanMaxDurationSec;Durata massima continuativa di una singola attivazione.;"s", 1, 0, 0, 60, 0
+uint16_t alsCanMinTimeBetweenSec;Tempo minimo tra due attivazioni successive.;"s", 1, 0, 0, 60, 0
+uint16_t alsCanPostDisableRpmLimit;Limite giri imposto subito dopo la disattivazione.;"RPM", 1, 0, 0, 10000, 0
+uint16_t alsCanPostDisableSec;Durata del limite post-disattivazione.;"s", 1, 0, 0, 30, 0
+! --- Uscite per livello (1-4, il livello attivo sovrascrive gli altri, non si somma) ---
+int16_t alsCanL1TimingLimit;Livello 1 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
+uint8_t alsCanL1IgnCutPct;Livello 1 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
+int16_t alsCanL1BoostAimAdd;Livello 1 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+int16_t alsCanL2TimingLimit;Livello 2 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
+uint8_t alsCanL2IgnCutPct;Livello 2 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
+int16_t alsCanL2BoostAimAdd;Livello 2 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+int16_t alsCanL3TimingLimit;Livello 3 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
+uint8_t alsCanL3IgnCutPct;Livello 3 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
+int16_t alsCanL3BoostAimAdd;Livello 3 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+int16_t alsCanL4TimingLimit;Livello 4 - limite di anticipo accensione applicato.;"deg", 1, 0, -30, 30, 0
+uint8_t alsCanL4IgnCutPct;Livello 4 - percentuale di colpi di accensione saltati.;"%", 1, 0, 0, 100, 0
+int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1, 0, -100, 100, 0
+! === TC CAN-BUS (controllo trazione, pilotato da CAN 0x200 byte 3 "tcLevel") ===
+! Verificato sul commit pinnato rusEFI (a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7,
+! firmware/integration/rusefi_config.txt) che la sintassi "custom <enum> N bits,
+! <ctype>, @OFFSET@, [a:b], @@<enum>_enum@@" e' quella reale usata per i selettori
+! a scelta multipla (es. antiLagActivationMode_e, riga 1132). Il file board-specifico
+! passa per lo stesso generatore (gen_config_common.sh, BOARD_ENGINE_CONFIGURATION_FROM_FILE),
+! quindi la sintassi e' valida anche qui.
+!
+! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
+! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
+! la marcia inserita in tempo reale, non disponibile in questo firmware
+! (ecu_can_protocol.lua: S.gear = nil, TODO). L'enum sotto lascia il posto riservato
+! per passare al metodo MoTeC pieno quando la marcia sara' disponibile, senza
+! rompere il layout (REGOLA 11 del protocollo CAN: un campo pubblicato non cambia
+! mai struttura).
+!
+! Layout di trazione selezionabile A RUNTIME in TunerStudio (non a compilazione):
+! la stessa ECU puo' passare da un'auto 2WD a una 4WD senza ricompilare.
+bit tcCanEnabled,"Enabled","Disabled"
+#define tcCanDrivetrain_e_enum "2WD Anteriore", "2WD Posteriore", "4WD"
+custom tcCanDrivetrain_e 1 bits, U08, @OFFSET@, [0:1], @@tcCanDrivetrain_e_enum@@
+tcCanDrivetrain_e tcCanDrivetrainLayout;
+#define tcCanMethod_e_enum "Slittamento % fisso (v1)", "Rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo)"
+custom tcCanMethod_e 1 bits, U08, @OFFSET@, [0:1], @@tcCanMethod_e_enum@@
+tcCanMethod_e tcCanInterventionMethod;
+uint8_t tcCanMinSpeedKmh;Velocita' minima vettura sotto la quale il TC non interviene (evita falsi slittamenti da fermo o in manovra).;"km/h", 1, 0, 0, 100, 0
+! --- Target di slittamento per livello (0-5, da CAN 0x200 byte 3, saturato su CFG.maxTc=5) ---
+! Direzione di scala CONGELATA nel protocollo [ECU_FIRMWARE_LOGICHE_PROTOCOLLO.txt, par.8.1]:
+! 0 = nessun intervento, 5 = massima intrusivita'. Valori da determinare a banco/pista
+! da Giampiero (REGOLA 1: nessun numero senza fonte) - qui solo i campi, default 0.
+uint8_t tcCanL0SlipTargetPct;Livello 0 (nessun intervento) - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanL1SlipTargetPct;Livello 1 - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanL2SlipTargetPct;Livello 2 - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanL3SlipTargetPct;Livello 3 - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanL4SlipTargetPct;Livello 4 - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanL5SlipTargetPct;Livello 5 (massima intrusivita') - percentuale di slittamento ammessa prima del taglio.;"%", 1, 0, 0, 100, 0
+uint8_t tcCanRampOutPct;Velocita' di rientro della coppia dopo un intervento, percentuale per ciclo di controllo (stesso principio del "Ramp Out Rate" MoTeC).;"%", 1, 0, 1, 100, 0
+! === WMI CAN-BUS (iniezione acqua/metanolo, pilotata da CAN 0x200 byte 0 bit 3 "cmdWmi") ===
+! Modello confermato su pratica reale (non invenzione): mappa aggiuntiva di anticipo
+! che si attiva SOLO a flusso/pressione confermati, rientro ISTANTANEO (non ramped)
+! alla mappa base alla perdita di pressione [fonte: thread utente "Peter Partee",
+! setup MoTeC M1 + Aquamist HFS-6, forum HPAcademy - stesso schema "mappa sicura A /
+! mappa aggressiva" descritto da Giampiero].
+! Limite architetturale rusEFI: non esiste nell'API Lua un hook per commutare a
+! runtime l'intera tabella di anticipo (verificato lua_hooks.cpp sul commit pinnato:
+! solo setTimingAdd()/setTimingMult(), trim continuo). La "mappa WMI" e' quindi
+! implementata come tabella 2D (RPM x boost) di ANTICIPO EXTRA, applicata via
+! setTimingAdd() quando la pressione e' confermata - equivalente nel risultato a
+! una mappa che sovrascrive quella base, anche se tecnicamente e' un delta sommato,
+! non uno swap di tabella.
+! Sintassi tabella 2D ripresa identica da quella nativa gia' presente in rusEFI
+! per l'antilag (ALSTimingRetardTable/alsIgnRetardLoadBins/alsIgnRetardrpmBins,
+! rusefi_config.txt riga 2331-2333) - stessa struttura, verificata.
+!
+! Collisione di attuatore con ALS-CAN sullo stesso campo (luaTimingAdd): quando
+! ALS-CAN e' attivo, WMI va sospeso (arbitraggio nel dispatcher C++, non qui).
+bit wmiCanEnabled,"Enabled","Disabled"
+#define WMI_CAN_SIZE 4
+#define WMI_CAN_RPM_SIZE 4
+int16_t[WMI_CAN_SIZE x WMI_CAN_RPM_SIZE] autoscale wmiCanTimingAddTable;;"deg", 0.1, 0, 0, 30, 1
+uint16_t[WMI_CAN_SIZE] wmiCanTimingAddBoostBins;;"kPa", 1, 0, 0, 300, 0
+uint16_t[WMI_CAN_RPM_SIZE] wmiCanTimingAddRpmBins;;"RPM", 1, 0, 0, 12000, 0
