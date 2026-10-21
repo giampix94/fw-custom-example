@@ -73,20 +73,21 @@ int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1,
 ! Verificato sul commit pinnato rusEFI (a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7,
 ! firmware/integration/rusefi_config.txt) che per i selettori a scelta multipla
 ! "custom NOME_ENUM N bits, TIPO, @OFFSET@, [a:b], <lista opzioni>" e' il pattern
-! reale (es. air_pressure_sensor_type_e riga 503, ignition_mode_e riga 752,
-! can_nbc_e riga 764: tutti con la lista opzioni scritta INLINE, parola per
-! parola tra virgolette, non tramite un #define richiamato altrove).
-! CORREZIONE #2 (build #47, commit 311cb27): qui sotto si era usato un #define
-! tcCanDrivetrain_e_enum / tcCanMethod_e_enum richiamato con il doppio simbolo
-! at (pattern visto a riga 1132, antiLagActivationMode_e) - ma quel file e'
-! processato in modo diverso. board_engine_configuration.txt viene letto per
-! intero come UN'UNICA stringa (-readfile BOARD_ENGINE_CONFIGURATION_FROM_FILE,
-! gen_config_common.sh riga 60) e il richiamo tramite doppio at viene risolto su
-! quella stringa PRIMA che le righe #define al suo interno vengano registrate:
-! un #define nello stesso file non e' quindi mai visibile al proprio richiamo,
-! con errore "No such variable" (VariableRegistry.applyVariables). Per questo
-! motivo sotto si usa la lista opzioni inline, come negli esempi reali citati
-! sopra - nessun #define, nessun richiamo con il doppio at in questo file.
+! reale, MA richiede che il tipo C NOME_ENUM esista gia' come
+! "typedef enum __attribute__ ((__packed__)) {...} NOME_ENUM;" in un header C++
+! visibile al compilatore (es. antiLagActivationMode_e e' dichiarato cosi' in
+! controllers/algo/rusefi_enums.h, riga 669 - non generato automaticamente da
+! questo file).
+! CORREZIONE #3 (build #48, commit 16411a2): con la lista opzioni inline ma
+! senza quel typedef C++, la generazione del config passa ma la compilazione
+! del firmware fallisce con "'tcCanDrivetrain_e' does not name a type" /
+! "'tcCanMethod_e' does not name a type" (header generato
+! engine_configuration_generated_structures_ecustm32_proto.h). Non essendoci
+! ancora un header board-specifico verificato come incluso in quel punto della
+! catena di compilazione, qui sotto i due campi sono temporaneamente uint8_t
+! semplici (0/1/2), non un custom enum: nessun tipo C da dichiarare altrove,
+! zero rischio di questa classe di errore. La UI a tendina in TunerStudio (via
+! picklist) e' una modifica separata, solo lato .ini, da aggiungere dopo.
 !
 ! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
 ! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
@@ -99,10 +100,8 @@ int16_t alsCanL4BoostAimAdd;Livello 4 - correzione al target di boost.;"kPa", 1,
 ! Layout di trazione selezionabile A RUNTIME in TunerStudio (non a compilazione):
 ! la stessa ECU puo' passare da un'auto 2WD a una 4WD senza ricompilare.
 bit tcCanEnabled,"Enabled","Disabled"
-custom tcCanDrivetrain_e 1 bits, U08, @OFFSET@, [0:1], "2WD Anteriore", "2WD Posteriore", "4WD"
-tcCanDrivetrain_e tcCanDrivetrainLayout;
-custom tcCanMethod_e 1 bits, U08, @OFFSET@, [0:1], "Slittamento % fisso (v1)", "Rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo)"
-tcCanMethod_e tcCanInterventionMethod;
+uint8_t tcCanDrivetrainLayout;Layout di trazione, selezionabile a runtime: 0 = 2WD Anteriore, 1 = 2WD Posteriore, 2 = 4WD.;"", 1, 0, 0, 2, 0
+uint8_t tcCanInterventionMethod;Metodo di intervento: 0 = slittamento percentuale fisso (v1, attivo), 1 = rapporto cambio / RPM zero-slittamento (riservato, richiede marcia inserita - non attivo).;"", 1, 0, 0, 1, 0
 uint8_t tcCanMinSpeedKmh;Velocita' minima vettura sotto la quale il TC non interviene (evita falsi slittamenti da fermo o in manovra).;"km/h", 1, 0, 0, 100, 0
 ! --- Target di slittamento per livello (0-5, da CAN 0x200 byte 3, saturato su CFG.maxTc=5) ---
 ! Direzione di scala CONGELATA nel protocollo [ECU_FIRMWARE_LOGICHE_PROTOCOLLO.txt, par.8.1]:
