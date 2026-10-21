@@ -18,7 +18,7 @@
 #include "board_overrides.h"
 #include "ignition_controller.h"
 #include "idle_thread.h"
-#include "settings.h"
+#include "lua_config_page.h"
 #include <rusefi/timer.h>
 #include <cmath>
 
@@ -137,34 +137,69 @@ static void customBoardDefaultConfiguration() {
   engineConfiguration->isSdCardEnabled = false;
 }
 
-// ======================= FIX: Lua script embedded perso al boot =======================
-// SINTOMO: rusEFI Console, tab "Lua Scripting" -> "LUA loading script length: 0..."
-// sempre, anche dopo full chip erase + reflash.
+// ============ FIX: lo script Lua embedded si riallinea da solo al firmware ============
+// PROBLEMA: lo script Lua vive in una pagina di config persistita (page5_s), che
+// sopravvive al flash del firmware. Caricando un firmware nuovo, lo script vecchio
+// (o vuoto) resta in flash e NON viene aggiornato: l'utente dovrebbe dare
+// "rewriteconfig" a mano. Inaccettabile per un utente normale.
 //
-// CAUSA (verificata sul sorgente rusefi/rusefi): il nostro default_script.lua chiama
-// setLuaScript(...) dentro "#include <default_script.lua>", risolto (BOARDINC) DENTRO
-// setDefaultEngineConfiguration() [rusefi firmware/controllers/algo/engine_configuration.cpp,
-// fine funzione]. Quella scrittura viene pero' IMMEDIATAMENTE svuotata dalla chiamata
-// successiva, nella stessa resetConfigurationExt(), a resetExtraPages() ->
-// luaConfigPageSetDefaults() [firmware/controllers/extra_flash_pages.cpp:24-26, commento:
-// "Set default values (empty script)"].
-// Per il nostro engine_type_e (gruppo dei tipi "generici": MINIMAL_PINS e affini),
-// applyEngineType() non reinstalla alcuno script -- commento esplicito nel suo switch:
-// "all basic settings are already set ... nothing to do"
-// [firmware/controllers/algo/engine_type_impl.cpp]. Quindi lo script resta vuoto SEMPRE,
-// indipendentemente da quante volte si fa erase: non e' un problema di erase incompleto,
-// e' l'ordine delle chiamate del firmware core.
+// SOLUZIONE: trattiamo lo script come CODICE del firmware, non come dato utente.
+// A ogni avvio (e a ogni burn) reinstalliamo nella pagina Lua lo script embedded nel
+// firmware, se diverso da quello memorizzato. Cosi' il firmware caricato vince sempre,
+// automaticamente, senza intervento utente e senza toccare il resto della tune.
 //
-// CORREZIONE alla documentazione precedente: il commento originale in default_script.lua
-// ("Installato da setLuaScript() durante applyEngineType()") era sbagliato -- l'#include
-// gira in setDefaultEngineConfiguration(), non in applyEngineType().
+// DOVE: custom_board_fix_configuration e' chiamato da applyDefaultsOrFixAfterBurn(),
+// "the ONLY place allowed to mutate configuration in the startup/burn path"
+//   [rusefi default_base_engine.cpp applyDefaultsOrFixAfterBurn();
+//    docs/board-configuration-override-hooks.md]. Gira a OGNI avvio dentro
+// validateConfigOnStartUpOrBurn() [engine_controller.cpp:570], che in rusefi.cpp e'
+// chiamata DOPO loadExtraPages() (pagina Lua gia' letta dalla flash) e PRIMA che parta
+// il thread Lua [rusefi.cpp: validateConfigOnStartUpOrBurn -> initRealHardwareEngineController;
+// lua.cpp: LuaThread legge luaConfigPageGetState()->luaScript]. Quindi la copia in RAM
+// e' pronta e corretta prima che Lua la carichi.
 //
-// FIX: applyEngineType() chiama SEMPRE, come ultima riga, custom_board_AfterTuneDefaults
-// [engine_type_impl.cpp:430] -- cioe' DOPO resetExtraPages(). Reinstalliamo qui lo stesso
-// script (stesso #include, stesso contenuto di default_script.lua), cosi' la scrittura
-// arriva per ultima e sopravvive al reset.
-static void installDefaultLuaScriptAfterTuneDefaults(engine_type_e) {
-  #include <default_script.lua>
+// NOTA: qui lo script Lua e' codice del protocollo CAN, non si edita a mano in TS.
+// Un'eventuale modifica fatta da TunerStudio verrebbe sovrascritta col contenuto
+// embedded al boot/burn successivo (comportamento voluto per questo progetto).
+
+// Cattura il puntatore allo script embedded (default_script.lua) SENZA scriverlo da
+// nessuna parte: il letterale R"(...)" ha durata statica, il puntatore resta valido.
+// #include <default_script.lua> risolto via BOARDINC = $(BOARD_DIR) [board.mk].
+static const char* embeddedLuaScript() {
+  static const char* s = nullptr;
+  if (s == nullptr) {
+    #define setLuaScript(x) do { s = (x); } while (0)
+    #include <default_script.lua>
+    #undef setLuaScript
+  }
+  return s;
+}
+
+// Copia lo script embedded nella pagina Lua in RAM (stessa logica di setLuaScript()
+// [rusefi settings.cpp:769]).
+static void installEmbeddedLuaScript() {
+  char* dest = luaConfigPageGetState()->luaScript;
+  const size_t cap = efi::size(luaConfigPageGetState()->luaScript);
+  strncpy(dest, embeddedLuaScript(), cap - 1);
+  dest[cap - 1] = '\0';
+}
+
+// resetConfigurationExt (ECU vergine / cambio engine type / rewriteconfig):
+// reinstalla lo script DOPO resetExtraPages()->luaConfigPageSetDefaults() che lo svuota.
+static void installLuaAfterTuneDefaults(engine_type_e) {
+  installEmbeddedLuaScript();
+}
+
+// A OGNI avvio (e a ogni burn): se lo script in pagina differisce da quello embedded
+// nel firmware, riallinealo. E' questo che rende l'aggiornamento automatico al flash
+// del firmware. Ritorna true se ha cambiato qualcosa (contratto di fix_configuration).
+static bool fixLuaScript(const engine_configuration_s*) {
+  const size_t cap = efi::size(luaConfigPageGetState()->luaScript);
+  if (strncmp(luaConfigPageGetState()->luaScript, embeddedLuaScript(), cap - 1) != 0) {
+    installEmbeddedLuaScript();
+    return true;
+  }
+  return false;
 }
 // ===================== FINE FIX Lua script =====================
 
@@ -329,5 +364,6 @@ void setup_custom_board_overrides() {
   custom_board_getThermistorSupplyVoltage = protoGetThermistorSupplyVoltage;
   custom_board_InitHardware = initMs5611Baro;  // baro MS5611 su I2C bit-bang PF0/PF1
   custom_board_periodicSlowCallback = turboTimerSlowCallback;  // turbo timer
-  custom_board_AfterTuneDefaults = installDefaultLuaScriptAfterTuneDefaults;  // fix Lua script perso al boot
+  custom_board_AfterTuneDefaults = installLuaAfterTuneDefaults;  // Lua su reset config
+  custom_board_fix_configuration = fixLuaScript;                 // Lua auto-refresh a ogni boot/burn
 }
