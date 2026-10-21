@@ -113,16 +113,24 @@ int16_t[ALS_CAN_ADJ_TPS_SIZE x ALS_CAN_ADJ_RPM_SIZE] autoscale alsCanL4IgnAdjust
 ! Sorgente dati: CAN ID 0x200, NON il CAN-RX standard di TunerStudio (stesso discorso
 ! di ALS-CAN sopra) - decodificato da ecu_can_protocol.lua, portato qui via LuaGauge.
 !
-! CORREZIONE #4 (sostituisce CORREZIONE #3): i due campi sotto sono tornati a essere
-! menu a tendina reali (custom tcCanDrivetrain_e / tcCanMethod_e), non piu' uint8_t
-! semplici. Il blocco che mancava - un typedef C per il tipo custom, vedi CORREZIONE #3
-! - e' stato aggiunto in board_enums.h (file nostro, NON nel submodule ext/rusefi) e
-! iniettato nella generazione via CUSTOM_GEN_CONFIG=gen_config_custom.sh (board.mk),
-! hook verificato in rusefi_config.mk (submodule, pinnato
-! a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7, regola .config-sentinel): se
-! CUSTOM_GEN_CONFIG e' definita, Make chiama quello script invece del
-! gen_config_board.sh del submodule (che ha la sua lista -enumInputFile cablata,
-! righe 68-69, e non e' parametrizzabile da fuori). Nessuna modifica al submodule.
+! CORREZIONE #5 (sostituisce CORREZIONE #4, ritirata): i due campi sotto sono menu a
+! tendina reali (custom tcCanDrivetrain_e / tcCanMethod_e). Il tentativo CORREZIONE #4
+! (CUSTOM_GEN_CONFIG + gen_config_custom.sh + board_enums.h via -enumInputFile) era
+! sbagliato all'origine ed e' stato ritirato: -enumInputFile fa leggere al tool Java i
+! NOMI/VALORI dell'enum solo per generare le opzioni TS quando la riga "custom" non le
+! scrive a mano (qui le scriviamo a mano, quindi era inutile) - NON genera nessun
+! #include nell'header C++ generato (CHeaderConsumer.java, submodule pinnato
+! a2d8784fb6f3599044cc0d7ec2c9fcb68912b2f7: l'unico #include scritto e' "rusefi_types.h").
+! Il typedef C restava quindi invisibile al compilatore -> stesso errore di CORREZIONE #3
+! ("'tcCanDrivetrain_e' does not name a type").
+! Il vero meccanismo, verificato a codice: rusefi_types.h (submodule) fa
+! "#include <board_types.h>"; il submodule fornisce solo un placeholder
+! (firmware/controllers/algo/board_types.h: "// placeholder to keep compiler happy in
+! case of no board override"); il Makefile mette BOARDINC=$(BOARD_DIR) come PRIMO path
+! di include (riga 200, prima di qualunque default). Basta un file board_types.h nella
+! root della board (file nostro, nessuna modifica al submodule) con i due typedef: il
+! compilatore lo trova prima del placeholder. board.mk e' stato riportato alla versione
+! precedente (CUSTOM_GEN_CONFIG rimossa), gen_config_custom.sh e board_enums.h eliminati.
 !
 ! v1: slittamento percentuale fisso (differenza ruota motrice/non motrice). NON il
 ! metodo a rapporto cambio / RPM-a-slittamento-zero di MoTeC M1: quel metodo richiede
