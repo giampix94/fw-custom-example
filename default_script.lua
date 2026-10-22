@@ -20,6 +20,19 @@
 // Validato (2026-10-20): CRC-8 vettore "123456789"->0x4B OK; nomi sensore
 //   cross-check vs firmware (2 corretti); getTimeSinceStartMs->Timer (corretto);
 //   compile + 30x onTick + onCmd (CRC ok/rotto/rc-bloccato) in simulazione OK.
+// CORREZIONE (22/10/2026): analisi indipendente (DISALLINEAMENTI_ECU_LUA.md,
+//   59 controlli automatici + verifica contro sorgenti rusEFI master) ha
+//   trovato 11 difetti critici/medi non coperti dalla validazione del
+//   2026-10-20, che controllava solo layout frame/CRC/nomi sensore, non le
+//   UNITA' FISICHE restituite da getSensor(). Corretti: A1 (MAP/oilP/fuelP/
+//   baro in kPa, non bar: fattore *100 -> *1), A2 (MAF in kg/h, non g/s),
+//   A3 (stato motore fisso a "fermo", sopprimeva tutti gli allarmi display),
+//   A4 (failsafe non applicato all'avvio: TC a 0 invece che al MASSIMO),
+//   B1/B6/B7 (campi non implementati inviati come 0 invece del valore
+//   riservato), C1 (byte riservati 0x111 non a 0x00), C3 (arrotondamento).
+//   Verificato: sintassi (lua5.3 loadfile), esecuzione su stub con valori
+//   di esempio (oilP 400 kPa->4.00 bar, MAF 36 kg/h->10.0 g/s, tcLevel=5
+//   pre-0x200, bytes riservati 0x111 a 00). NON testato su hardware reale.
 // ============================================================================
 	setLuaScript(R"(
 --[[ ==========================================================================
@@ -117,9 +130,11 @@ end
 
 -- Little-endian, indice 1-based come da convenzione Lua.
 -- pos = indice del byte basso.
+-- CORRETTO (22/10/2026): math.floor(v) tronca (4,35*100=434,9999... -> 434
+-- invece di 435). math.floor(v+0.5) arrotonda. [DISALLINEAMENTI_ECU_LUA.md C3]
 local function putU16(pos, v)
   if v == nil then v = INVALID_U16 end
-  v = math.floor(v)
+  v = math.floor(v + 0.5)
   if v < 0 then v = 0 elseif v > 0xFFFF then v = 0xFFFF end
   TX[pos]     = v % 256
   TX[pos + 1] = math.floor(v / 256) % 256
@@ -127,7 +142,7 @@ end
 
 local function putI16(pos, v)
   if v == nil then v = INVALID_I16 end
-  v = math.floor(v)
+  v = math.floor(v + 0.5)
   if v < -32768 then v = -32768 elseif v > 32767 then v = 32767 end
   if v < 0 then v = v + 65536 end
   TX[pos]     = v % 256
@@ -136,14 +151,14 @@ end
 
 local function putU8(pos, v)
   if v == nil then v = INVALID_U8 end
-  v = math.floor(v)
+  v = math.floor(v + 0.5)
   if v < 0 then v = 0 elseif v > 255 then v = 255 end
   TX[pos] = v
 end
 
 local function putI8(pos, v)
   if v == nil then v = 0x7F end
-  v = math.floor(v)
+  v = math.floor(v + 0.5)
   if v < -128 then v = -128 elseif v > 127 then v = 127 end
   if v < 0 then v = v + 256 end
   TX[pos] = v
@@ -224,10 +239,14 @@ local function snapshot()
     S.dFuel = nil
   end
 
-  -- TODO: marcia inserita e stato motore.
-  -- Verificare come esporli nella versione di firmware in uso.
+  -- CORRETTO (22/10/2026): stato motore era fisso a 0 ("fermo"), sopprimendo
+  -- tutti gli allarmi a valle (display V2.20.0: OIL-P/BOOST-P/FUEL-P/AFR/
+  -- KNOCK/EGT-T). Soglie sui giri, proposta da D5 -- da sostituire con lo
+  -- stato reale rusEFI quando disponibile. [DISALLINEAMENTI_ECU_LUA.md A3]
   S.gear        = nil
-  S.engineState = 0
+  if S.rpm == nil or S.rpm < 50 then S.engineState = 0
+  elseif S.rpm < 600 then S.engineState = 1
+  else S.engineState = 2 end
 end
 
 ------------------------------------------------------------------------------
@@ -249,12 +268,18 @@ local function tx100()
 end
 
 -- ---------- 0x101 PRESSURES ----------
+-- CORRETTO (22/10/2026): getSensor per Map/OilPressure/FuelPressureInjector
+-- restituisce kPa (rusEFI master: init_map.cpp getMapCfg, es. MT_GM_1_BAR
+-- {0,10kpa,5,105kpa}; sensor_type.h, FuelPressureLow/High "// in kPa"; stessa
+-- convenzione per OilPressure via initFluidPressure()). Il campo e' in
+-- 0,01 bar (specifica App.B), e 1 kPa = 0,01 bar -> fattore 1, non 100.
+-- Prima: *100 -> valori 100x (es. 4 bar letti 400 bar). [DISALLINEAMENTI_ECU_LUA.md A1]
 local function tx101()
   clearTx()
-  putU16(1, scale(S.oilP,  100))
-  putI16(3, scale(S.boost, 100))
-  putU16(5, scale(S.dFuel, 100))
-  putU16(7, scale(S.map,   100))
+  putU16(1, scale(S.oilP,  1))
+  putI16(3, scale(S.boost, 1))
+  putU16(5, scale(S.dFuel, 1))
+  putU16(7, scale(S.map,   1))
   send(0x101)
 end
 
@@ -278,7 +303,10 @@ local function tx103()
   putU16(3, scale(S.lambda, 1000))
   putU16(5, nil)                          -- TODO lambda target
   putU8 (7, nil)                          -- TODO duty iniettori
-  putU8 (8, 0)                            -- TODO livello detonazione
+  -- CORRETTO (22/10/2026): era 0 (valore valido, verde su pagina KNOCK del
+  -- display). Nessun sensore collegato -> valore riservato u8.
+  -- [DISALLINEAMENTI_ECU_LUA.md B1]
+  putU8 (8, nil)                          -- TODO livello detonazione
   send(0x103)
 end
 
@@ -319,7 +347,10 @@ local function tx111()
   clearTx()
   putI16(1, scale(getSensor(SENSOR.gearT), 10))
   putI16(3, nil)                          -- IAT2
-  putI16(5, nil)                          -- riservato
+  -- CORRETTO (22/10/2026): byte 4-5 sono "riservato" (cap.12 regola 2: deve
+  -- essere 0x00). putI16(nil) scriveva il marcatore non valido 0x7FFF (FF 7F).
+  -- Rimossa: clearTx() lascia questi byte a 0x00 come richiesto.
+  -- [DISALLINEAMENTI_ECU_LUA.md C1]
   putU8 (7, 0)                            -- riservato
   putU8 (8, rcMedium)                     -- rev. 1.1
   send(0x111)
@@ -334,13 +365,22 @@ local function tx112()
 end
 
 -- ---------- 0x113 ANALOG_MISC ----------
+-- CORRETTO (22/10/2026): MAF e barometrica.
+-- MAF: getSensor(SENSOR.maf) restituisce kg/h (rusEFI master, init_maf.cpp:
+-- "This function converts volts -> kg/h"), non g/s. Campo in 0,1 g/s
+-- (specifica App.B) -> fattore kg/h*1000/3600*10 = kg/h*(10*1000/3600).
+-- Prima: fattore 10, trattava kg/h come g/s (36 kg/h trasmesso come 36,0 g/s
+-- invece di 10,0 g/s). [DISALLINEAMENTI_ECU_LUA.md A2]
+-- Barometrica: stessa unita' kPa di MAP (init_map.cpp, baroConverter usa lo
+-- stesso configureMapFunction/getMapCfg di mapConverter) -> fattore 1, non
+-- 100. [DISALLINEAMENTI_ECU_LUA.md A1]
 local function tx113()
   clearTx()
   putU16(1, scale(getSensor(SENSOR.vbat), 100))
   putU8 (3, scale(getSensor(SENSOR.fuelLevel), 2))
   putU8 (4, 0)
-  putU16(5, scale(getSensor(SENSOR.maf), 10))
-  putU16(7, scale(S.baro, 100))
+  putU16(5, scale(getSensor(SENSOR.maf), 10 * 1000 / 3600))
+  putU16(7, scale(S.baro, 1))
   send(0x113)
 end
 
@@ -380,10 +420,15 @@ local function tx115()
 end
 
 -- ---------- 0x116 WMI_STATE ----------
+-- CORRETTO (22/10/2026): la curva del trasduttore pressione WMI non esiste
+-- ancora (TODO sotto); il valore trasmesso era la tensione grezza (V) letta
+-- come se fosse gia' in bar*100 (2,5 V -> "2,50 bar" invece di una curva
+-- reale). Sinche' la curva non c'e', il campo deve essere non valido: la
+-- tensione grezza resta disponibile in 0x114. [DISALLINEAMENTI_ECU_LUA.md A5]
 local function tx116()
   clearTx()
   local p = getSensor(SENSOR.aux1)        -- TODO: applicare la curva reale
-  putU16(1, scale(p, 100))
+  putU16(1, nil)
   putU16(3, WMI_PRESS_MIN * 100)
   putU8 (5, nil)                          -- livello serbatoio
   putU8 (6, 0)                            -- duty comandato
@@ -400,11 +445,14 @@ local function updatePeaks()
   if c ~= nil and c > pkClt then pkClt = c end
 end
 
+-- CORRETTO (22/10/2026): pkBoost e' in kPa (stessa correzione A1, fattore 1
+-- non 100); pkEgt non e' mai aggiornato (EGT non implementato, 0x112) e
+-- viaggiava come 0 -- ora marcatore non valido u16. [DISALLINEAMENTI_ECU_LUA.md A1/B6]
 local function tx120()
   clearTx()
   putU16(1, pkRpm)
-  putI16(3, pkBoost * 100)
-  putU16(5, pkEgt)
+  putI16(3, pkBoost * 1)
+  putU16(5, nil)
   putI16(7, pkClt * 10)
   send(0x120)
 end
@@ -431,7 +479,9 @@ local function tx122()
   putU8 (4, CFG.maxBoost)
   putU8 (5, CFG.maxTc)
   putU8 (6, 0)
-  putI16(7, 0)                            -- TODO obiettivo boost corrente
+  -- CORRETTO (22/10/2026): era 0 (valore valido = "obiettivo 0,00 bar").
+  -- [DISALLINEAMENTI_ECU_LUA.md B7]
+  putI16(7, nil)                          -- TODO obiettivo boost corrente
   send(0x122)
 end
 
@@ -475,6 +525,12 @@ local function applyFailsafe()
   boostLevel  = 0
   tcLevel     = CFG.maxTc      -- cap. 8.1: il TC ripiega al MASSIMO, non a 0
 end
+
+-- CORRETTO (22/10/2026): prima dell'arrivo del primo 0x200 valido, i livelli
+-- restavano a 0/0/0 (tcLevel incluso) invece che nello stato di failsafe
+-- richiesto dalla specifica (TC al massimo). applyFailsafe() va invocata
+-- subito, non solo al timeout. [DISALLINEAMENTI_ECU_LUA.md A4]
+applyFailsafe()   -- stato sicuro fino al primo 0x200 valido
 
 local function clamp(v, hi)
   if v == nil or v < 0 then return 0 end
